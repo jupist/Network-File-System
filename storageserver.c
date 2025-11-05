@@ -5,9 +5,13 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <pthread.h>
-#include <ctype.h> // For isspace()
-#include <time.h>   // For faking timestamps
-#include "common.h"
+#include <ctype.h>     // For isspace()
+#include <sys/stat.h>  // For stat()
+#include <time.h>      // For strftime()
+
+#include "common.h" 
+
+
 // --- Define This Storage Server's Details ---
 #define SS_NM_PORT 9001       // Port for NM to connect to
 #define SS_CLIENT_PORT 9002   // Port for Clients to connect to
@@ -20,25 +24,35 @@ const char* my_files[] = {
 int num_files = 2;
 
 
-// --- NEW HELPER: Get File Metadata ---
+// --- **** UPDATED METADATA HELPER **** ---
 /*
- * Reads a file and calculates its word and character count.
- * Fills the provided pointers.
+ * Reads a file's stats and calculates word/char counts.
+ * Fills the provided pointers with REAL timestamps.
  * Returns 0 on success, -1 on failure.
  */
-int get_file_metadata(const char* file_path, int* word_count, int* char_count) {
+int get_file_metadata(const char* file_path, int* word_count, int* char_count, 
+                      char* created_ts, char* modified_ts, int ts_len) 
+{
+    struct stat file_stat;
+
+    if (stat(file_path, &file_stat) != 0) {
+        perror("SS: stat failed");
+        return -1;
+    }
+
+    *char_count = (int)file_stat.st_size; // Get byte count from stat
+
+    // Now, open the file just to count words
     FILE* file = fopen(file_path, "r");
     if (file == NULL) {
+        perror("SS: fopen for word count failed");
         return -1;
     }
 
     *word_count = 0;
-    *char_count = 0;
     int in_word = 0;
     char c;
-
     while ((c = fgetc(file)) != EOF) {
-        (*char_count)++;
         if (isspace(c)) {
             in_word = 0;
         } else if (in_word == 0) {
@@ -46,8 +60,19 @@ int get_file_metadata(const char* file_path, int* word_count, int* char_count) {
             (*word_count)++;
         }
     }
-
     fclose(file);
+
+    // Format timestamps
+    struct tm *tm_info;
+
+    // Created time (st_ctime)
+    tm_info = localtime(&file_stat.st_ctime);
+    strftime(created_ts, ts_len, "%Y-%m-%d %H:%M", tm_info);
+
+    // Modified time (st_mtime)
+    tm_info = localtime(&file_stat.st_mtime);
+    strftime(modified_ts, ts_len, "%Y-%m-%d %H:%M", tm_info);
+
     return 0;
 }
 
@@ -56,7 +81,7 @@ int get_file_metadata(const char* file_path, int* word_count, int* char_count) {
  * Thread function to handle a direct connection from a Client
  */
 void* handle_client_request(void* arg) {
-    // (This function is unchanged from the previous step)
+    // (This function is unchanged)
     int client_socket = *((int*)arg);
     free(arg);
 
@@ -146,7 +171,7 @@ void* handle_client_request(void* arg) {
  * Main loop for the SS to listen for direct Client connections
  */
 void* start_client_server(void* arg) {
-    // (This function is unchanged from the previous step)
+    // (This function is unchanged)
     int server_fd;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
@@ -199,7 +224,6 @@ void* start_client_server(void* arg) {
  * Thread function to handle a connection from the Name Server
  */
 void* handle_nm_command(void* arg) {
-    // (This function is UPDATED)
     int nm_socket = *((int*)arg);
     free(arg);
 
@@ -222,6 +246,7 @@ void* handle_nm_command(void* arg) {
     }
 
     if (strcmp(command, "CREATE_FILE") == 0) {
+        // (This section is unchanged)
         printf("SS (NM-Handler): NM requested to create '%s'\n", filename);
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
@@ -236,6 +261,7 @@ void* handle_nm_command(void* arg) {
         }
     
     } else if (strcmp(command, "DELETE_FILE") == 0) {
+        // (This section is unchanged)
         printf("SS (NM-Handler): NM requested to delete '%s'\n", filename);
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
@@ -248,24 +274,30 @@ void* handle_nm_command(void* arg) {
         }
     
     } else if (strcmp(command, "GET_METADATA") == 0) {
-        // --- **** NEW METADATA LOGIC **** ---
+        // --- **** UPDATED METADATA LOGIC **** ---
         printf("SS (NM-Handler): NM requested metadata for '%s'\n", filename);
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
 
         int words = 0, chars = 0;
+        char created_ts[128], modified_ts[128]; // No 'accessed' timestamp
         char response_buf[BUFFER_SIZE];
 
-        if (get_file_metadata(file_path, &words, &chars) == 0) {
-            // Fake the timestamp for now, per the example format
-            snprintf(response_buf, sizeof(response_buf), "METADATA_RESPONSE %d %d 2025-10-10 14:32\n", words, chars);
+        if (get_file_metadata(file_path, &words, &chars, created_ts, modified_ts, 128) == 0) {
+            // Send real timestamps AND word count (no accessed time)
+            snprintf(response_buf, sizeof(response_buf), 
+                "METADATA_RESPONSE %d %d %s %s\n", 
+                words, chars,
+                created_ts,  // e.g., "2025-11-05 16:30"
+                modified_ts
+            );
             printf("  Sending metadata: %s", response_buf);
         } else {
             perror("SS (NM-Handler): get_file_metadata failed");
             snprintf(response_buf, sizeof(response_buf), "METADATA_FAIL\n");
         }
         write(nm_socket, response_buf, strlen(response_buf));
-        // --- **** END OF NEW METADATA LOGIC **** ---
+        // --- **** END OF UPDATED METADATA LOGIC **** ---
 
     } else {
         printf("SS (NM-Handler): Unknown command from NM '%s'\n", command);
@@ -280,7 +312,7 @@ void* handle_nm_command(void* arg) {
  * Main loop for the SS to listen for commands from the Name Server
  */
 void* start_nm_server(void* arg) {
-    // (This function is unchanged from the previous step)
+    // (This function is unchanged)
     int server_fd;
     struct sockaddr_in server_addr, nm_addr;
     socklen_t nm_len = sizeof(nm_addr);
@@ -332,7 +364,7 @@ void* start_nm_server(void* arg) {
  * Connects to the Name Server and sends a registration message.
  */
 void register_with_name_server() {
-    // (This function is unchanged from the previous step)
+    // (This function is unchanged)
     int sock;
     struct sockaddr_in nm_addr;
     char registration_msg[BUFFER_SIZE];
@@ -374,7 +406,7 @@ void register_with_name_server() {
 }
 
 int main() {
-    // (This function is unchanged from the previous step)
+    // (This function is unchanged)
     register_with_name_server();
     
     pthread_t client_server_thread_id;

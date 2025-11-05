@@ -1,0 +1,2 @@
+what if its random
+echo "mannu!"

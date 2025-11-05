@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <pthread.h>
+#include <time.h>     // For time() and strftime()
 #include "common.h"
 
 /*
@@ -23,6 +24,11 @@ typedef struct {
     char owner_username[256];        
     AccessControl acl[MAX_PERMISSIONS]; 
     int num_permissions;                
+
+    // --- **** NEW/UPDATED FIELDS **** ---
+    char last_accessed_by[256]; // User who last read/streamed
+    char last_accessed_ts[128]; // Timestamp of last read/stream
+    // --- **** END OF UPDATE **** ---
 
     int ss_client_port;      
     char ss_ip_addr[INET_ADDRSTRLEN]; 
@@ -45,6 +51,7 @@ typedef struct {
 #define MAX_FILES 100
 #define MAX_SERVERS 10
 #define MAX_CLIENTS 50 
+#define EXEC_OUTPUT_BUFFER_SIZE 8192 
 
 FileLocation file_directory[MAX_FILES];
 StorageServer server_list[MAX_SERVERS];
@@ -143,53 +150,111 @@ int forward_delete_to_ss(const char* ss_ip, int ss_nm_port, const char* filename
     }
 }
 
+// --- **** UPDATED METADATA HELPER **** ---
 /*
- * --- NEW HELPER: Get Metadata from SS ---
+ * Connects to SS, sends GET_METADATA, and parses the new response.
+ * Fills in the pointers provided.
+ * Returns 0 on success, -1 on failure.
  */
-int get_metadata_from_ss(const char* ss_ip, int ss_nm_port, const char* filename, char* out_buffer, int out_len) {
+int get_metadata_from_ss(const char* ss_ip, int ss_nm_port, const char* filename,
+                         int* out_words, int* out_chars, 
+                         char* out_created_ts, char* out_modified_ts, int ts_len) 
+{
     int ss_sock;
     struct sockaddr_in ss_addr;
     char command[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
 
-    if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("NM (SS-Client): socket failed");
-        return -1;
-    }
+    if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) { /* ... */ return -1; }
     ss_addr.sin_family = AF_INET;
     ss_addr.sin_port = htons(ss_nm_port);
-    if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) {
-        perror("NM (SS-Client): invalid address");
-        close(ss_sock);
-        return -1;
-    }
-    if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) {
-        perror("NM (SS-Client): connect to SS failed");
-        close(ss_sock);
-        return -1;
-    }
+    if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) { /* ... */ close(ss_sock); return -1; }
+    if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) { /* ... */ close(ss_sock); return -1; }
     
     snprintf(command, sizeof(command), "GET_METADATA %s\n", filename);
-    if (write(ss_sock, command, strlen(command)) < 0) {
-        perror("NM (SS-Client): write to SS failed");
-        close(ss_sock);
-        return -1;
-    }
+    if (write(ss_sock, command, strlen(command)) < 0) { /* ... */ close(ss_sock); return -1; }
     
-    ssize_t bytes_read = read(ss_sock, out_buffer, out_len - 1);
+    ssize_t bytes_read = read(ss_sock, response, sizeof(response) - 1);
     close(ss_sock); 
     
-    if (bytes_read <= 0) {
-        printf("NM (SS-Client): No response from SS for metadata.\n");
-        return -1;
-    }
+    if (bytes_read <= 0) { /* ... */ return -1; }
+    response[bytes_read] = '\0';
     
-    out_buffer[bytes_read] = '\0';
-    
-    if (strncmp(out_buffer, "METADATA_RESPONSE", 17) == 0) {
+    if (strncmp(response, "METADATA_RESPONSE", 17) == 0) {
+        char created_date[64], created_time[64];
+        char modified_date[64], modified_time[64];
+        
+        // Updated sscanf to match the new SS response (no accessed time)
+        int items = sscanf(response, "METADATA_RESPONSE %d %d %63s %63s %63s %63s", 
+                 out_words, out_chars, 
+                 created_date, created_time,
+                 modified_date, modified_time);
+        
+        if (items != 6) { // Expect 6 items now
+            printf("NM: Failed to parse metadata response: %s\n", response);
+            return -1;
+        }
+        
+        // Combine the date and time strings
+        snprintf(out_created_ts, ts_len, "%s %s", created_date, created_time);
+        snprintf(out_modified_ts, ts_len, "%s %s", modified_date, modified_time);
+        
         return 0; // Success
     } else {
         return -1; // Failure
     }
+}
+
+// --- **** NEW HELPER: Get File Content from SS **** ---
+/*
+ * Connects to SS, sends READ_FILE, and reads the *entire* file content.
+ * Returns 0 on success, -1 on failure.
+ */
+int get_file_content_from_ss(const char* ss_ip, int ss_client_port, const char* filename, char* out_buffer, int out_len) {
+    int ss_sock;
+    struct sockaddr_in ss_addr;
+    char command[BUFFER_SIZE];
+
+    if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) { 
+        perror("NM (SS-Client): socket failed");
+        return -1; 
+    }
+    ss_addr.sin_family = AF_INET;
+    ss_addr.sin_port = htons(ss_client_port);
+    if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) { 
+        perror("NM (SS-Client): invalid address");
+        close(ss_sock); 
+        return -1; 
+    }
+    if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) { 
+        perror("NM (SS-Client): connect to SS failed");
+        close(ss_sock); 
+        return -1; 
+    }
+    
+    snprintf(command, sizeof(command), "READ_FILE %s\n", filename);
+    if (write(ss_sock, command, strlen(command)) < 0) { 
+        perror("NM (SS-Client): write to SS failed");
+        close(ss_sock); 
+        return -1; 
+    }
+
+    ssize_t total_bytes_read = 0;
+    ssize_t bytes_read;
+    while (total_bytes_read < out_len - 1 && 
+           (bytes_read = read(ss_sock, out_buffer + total_bytes_read, out_len - 1 - total_bytes_read)) > 0) {
+        total_bytes_read += bytes_read;
+    }
+    
+    out_buffer[total_bytes_read] = '\0'; // Null-terminate
+    close(ss_sock);
+    
+    if (bytes_read < 0) {
+        perror("NM (SS-Client): read file content failed");
+        return -1;
+    }
+    
+    return 0; // Success
 }
 
 
@@ -217,9 +282,6 @@ int check_permission(FileLocation* file, const char* user_requesting, char permi
 /*
  * This is the function that each thread will run.
  */
-/*
- * This is the function that each thread will run.
- */
 void* handle_connection(void* arg) {
     int client_socket = *((int*)arg);
     free(arg); 
@@ -243,7 +305,7 @@ void* handle_connection(void* arg) {
 
     // 3. Identify the connection type
     if (strncmp(buffer, "REGISTER_SS", 11) == 0) {
-        // (This section is unchanged)
+        // --- **** UPDATED REGISTER_SS LOGIC **** ---
         printf("New connection from a Storage Server (%s).\n", peer_ip);
         
         int ss_nm_port, ss_client_port;
@@ -282,6 +344,9 @@ void* handle_connection(void* arg) {
                 
                 strncpy(new_file->owner_username, "system", 255); 
                 new_file->num_permissions = 0; 
+                // Initialize new access time fields
+                strncpy(new_file->last_accessed_by, "N/A", 255);
+                strncpy(new_file->last_accessed_ts, "N/A", 127);
                 
                 printf("  Registered file: %s\n", new_file->filename);
             }
@@ -325,10 +390,9 @@ void* handle_connection(void* arg) {
             buffer[strcspn(buffer, "\n")] = 0; // Remove trailing newline
 
             if (strncmp(buffer, "VIEW", 4) == 0) {
-                // --- **** NEW UPDATED VIEW LOGIC **** ---
+                // --- **** UPDATED VIEW LOGIC **** ---
                 printf("Client requested VIEW\n");
                 
-                // Parse flags with correct precedence
                 int all_flag = 0;
                 int long_flag = 0;
 
@@ -360,9 +424,8 @@ void* handle_connection(void* arg) {
                     
                     if (all_flag || has_permission) {
                         if (long_flag) {
-                            char metadata_response[BUFFER_SIZE];
                             int words = 0, chars = 0;
-                            char date[64] = "N/A", time[64] = "N/A";
+                            char created_ts[128], modified_ts[128]; // No accessed_ts
                             
                             StorageServer* ss = NULL;
                             for (int j = 0; j < g_num_servers; j++) {
@@ -374,21 +437,20 @@ void* handle_connection(void* arg) {
                             }
                             
                             if (ss != NULL) {
+                                // We must unlock to make a network call
                                 pthread_mutex_unlock(&g_system_mutex);
-                                int res = get_metadata_from_ss(ss->ss_ip_addr, ss->ss_nm_port, file_directory[i].filename, metadata_response, sizeof(metadata_response));
-                                pthread_mutex_lock(&g_system_mutex);
-
-                                if (res == 0) {
-                                    sscanf(metadata_response, "METADATA_RESPONSE %d %d %63s %63s", &words, &chars, date, time);
-                                }
+                                int res = get_metadata_from_ss(ss->ss_ip_addr, ss->ss_nm_port, file_directory[i].filename, 
+                                                               &words, &chars, created_ts, modified_ts, 128);
+                                pthread_mutex_lock(&g_system_mutex); // Re-lock
+                                (void)res; 
                             }
-
-                            char timestamp[128];
-                            snprintf(timestamp, sizeof(timestamp), "%s %s", date, time);
                             
+                            // Use the NM's "last_accessed_ts"
                             offset += sprintf(response_buffer + offset,
                                 "| %-20s | %5d | %5d | %-16s | %-10s |\n",
-                                file_directory[i].filename, words, chars, timestamp, file_directory[i].owner_username);
+                                file_directory[i].filename, words, chars, 
+                                file_directory[i].last_accessed_ts, // <-- Use NM's version
+                                file_directory[i].owner_username);
                             
                         } else {
                             // Simple listing
@@ -414,7 +476,7 @@ void* handle_connection(void* arg) {
                 // --- **** END OF UPDATED VIEW LOGIC **** ---
             
             } else if (strncmp(buffer, "READ", 4) == 0) {
-                // (This section is unchanged)
+                // --- **** UPDATED READ LOGIC **** ---
                 char filename[256];
                 if (sscanf(buffer, "READ %s", filename) != 1) {
                     const char* err_msg = "ERROR: Invalid READ format. Use: READ <filename>\n";
@@ -437,6 +499,13 @@ void* handle_connection(void* arg) {
                             permitted = 1;
                             strncpy(ss_ip, file_directory[i].ss_ip_addr, INET_ADDRSTRLEN);
                             ss_port = file_directory[i].ss_client_port;
+                            
+                            // --- **** THE FIX: UPDATE ACCESS TIME **** ---
+                            time_t now = time(NULL);
+                            struct tm *tm_info = localtime(&now);
+                            strftime(file_directory[i].last_accessed_ts, 128, "%Y-%m-%d %H:%M", tm_info);
+                            strncpy(file_directory[i].last_accessed_by, username, 255);
+                            // --- **** END OF FIX **** ---
                         }
                         break;
                     }
@@ -457,7 +526,7 @@ void* handle_connection(void* arg) {
                 write(client_socket, response_buffer, strlen(response_buffer));
             
             } else if (strncmp(buffer, "STREAM", 6) == 0) {
-                // (This section is unchanged)
+                // --- **** UPDATED STREAM LOGIC **** ---
                 char filename[256];
                 if (sscanf(buffer, "STREAM %s", filename) != 1) {
                     const char* err_msg = "ERROR: Invalid STREAM format. Use: STREAM <filename>\n";
@@ -480,6 +549,13 @@ void* handle_connection(void* arg) {
                             permitted = 1;
                             strncpy(ss_ip, file_directory[i].ss_ip_addr, INET_ADDRSTRLEN);
                             ss_port = file_directory[i].ss_client_port;
+                            
+                            // --- **** THE FIX: UPDATE ACCESS TIME **** ---
+                            time_t now = time(NULL);
+                            struct tm *tm_info = localtime(&now);
+                            strftime(file_directory[i].last_accessed_ts, 128, "%Y-%m-%d %H:%M", tm_info);
+                            strncpy(file_directory[i].last_accessed_by, username, 255);
+                            // --- **** END OF FIX **** ---
                         }
                         break;
                     }
@@ -500,7 +576,7 @@ void* handle_connection(void* arg) {
                 write(client_socket, response_buffer, strlen(response_buffer));
 
             } else if (strncmp(buffer, "CREATE", 6) == 0) {
-                // (This section is unchanged)
+                // --- **** UPDATED CREATE LOGIC **** ---
                 char filename[256];
                 if (sscanf(buffer, "CREATE %s", filename) != 1) {
                     const char* err_msg = "ERROR: Invalid CREATE format. Use: CREATE <filename>\n";
@@ -549,6 +625,10 @@ void* handle_connection(void* arg) {
 
                         strncpy(new_file->owner_username, username, 255); 
                         new_file->num_permissions = 0; 
+                        
+                        // Initialize new access time fields
+                        strncpy(new_file->last_accessed_by, "N/A", 255);
+                        strncpy(new_file->last_accessed_ts, "N/A", 127);
                         
                         printf("  Successfully registered new file '%s' for owner '%s'\n", filename, username);
                         write(client_socket, "File created successfully.\n", sizeof("File created successfully.\n") - 1);
@@ -762,6 +842,192 @@ void* handle_connection(void* arg) {
                 printf("  Access removed.\n");
                 write(client_socket, "Access removed successfully.\n", sizeof("Access removed successfully.\n") - 1);
                 pthread_mutex_unlock(&g_system_mutex);
+            
+            } else if (strncmp(buffer, "INFO", 4) == 0) {
+                // --- **** UPDATED INFO COMMAND LOGIC **** ---
+                char filename[256];
+                if (sscanf(buffer, "INFO %s", filename) != 1) {
+                    const char* err_msg = "ERROR: Invalid INFO format. Use: INFO <filename>\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                printf("Client requested INFO for '%s'\n", filename);
+
+                int found_index = -1;
+                int permitted = 0;
+                char response_buffer[BUFFER_SIZE] = {0};
+                int offset = 0;
+
+                pthread_mutex_lock(&g_system_mutex);
+                for (int i = 0; i < g_num_files; i++) {
+                    if (strcmp(file_directory[i].filename, filename) == 0) {
+                        found_index = i;
+                        if (check_permission(&file_directory[i], username, 'R')) {
+                            permitted = 1;
+                        }
+                        break;
+                    }
+                }
+
+                if (found_index == -1) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    const char* err_msg = "ERROR: File not found.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+
+                if (!permitted) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    const char* err_msg = "ERROR: Access Denied.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    printf("  Access Denied for user '%s'.\n", username);
+                    continue;
+                }
+
+                FileLocation file_copy = file_directory[found_index];
+                StorageServer* ss = NULL;
+                for (int j = 0; j < g_num_servers; j++) {
+                    if (strcmp(server_list[j].ss_ip_addr, file_copy.ss_ip_addr) == 0 &&
+                        server_list[j].ss_client_port == file_copy.ss_client_port) {
+                        ss = &server_list[j];
+                        break;
+                    }
+                }
+                
+                if (ss == NULL) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    const char* err_msg = "ERROR: Could not find SS for file. Directory out of sync.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                char ss_ip[INET_ADDRSTRLEN];
+                strncpy(ss_ip, ss->ss_ip_addr, INET_ADDRSTRLEN);
+                int ss_nm_port = ss->ss_nm_port;
+                
+                pthread_mutex_unlock(&g_system_mutex);
+                
+                // Get metadata from SS
+                int words = 0, chars = 0;
+                char created_ts[128], modified_ts[128]; // No accessed_ts
+
+                if (get_metadata_from_ss(ss_ip, ss_nm_port, file_copy.filename, &words, &chars, created_ts, modified_ts, 128) != 0) {
+                    const char* err_msg = "ERROR: Failed to retrieve file metadata from Storage Server.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+
+                // Format the response to match the PDF example
+                offset += sprintf(response_buffer + offset, "--> File: %s\n", file_copy.filename);
+                offset += sprintf(response_buffer + offset, "--> Owner: %s\n", file_copy.owner_username);
+                offset += sprintf(response_buffer + offset, "--> Created: %s\n", created_ts);
+                offset += sprintf(response_buffer + offset, "--> Last Modified: %s\n", modified_ts);
+                offset += sprintf(response_buffer + offset, "--> Size: %d bytes\n", chars); 
+                
+                // Add ACL info
+                offset += sprintf(response_buffer + offset, "--> Access: %s (RW)\n", file_copy.owner_username);
+                for (int i = 0; i < file_copy.num_permissions; i++) {
+                    offset += sprintf(response_buffer + offset, "-->         %s (%s)\n", 
+                                      file_copy.acl[i].username, 
+                                      file_copy.acl[i].permission == 'W' ? "RW" : "R"); 
+                }
+                
+                // Use the NM's version of last accessed user and time
+                offset += sprintf(response_buffer + offset, "--> Last Accessed: %s by %s\n", file_copy.last_accessed_ts, file_copy.last_accessed_by); 
+
+                write(client_socket, response_buffer, offset);
+                // --- **** END OF INFO COMMAND LOGIC **** ---
+            
+            } else if (strncmp(buffer, "EXEC", 4) == 0) {
+                // (This section is unchanged)
+                char filename[256];
+                if (sscanf(buffer, "EXEC %s", filename) != 1) {
+                    const char* err_msg = "ERROR: Invalid EXEC format. Use: EXEC <filename>\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                printf("Client requested EXEC for '%s'\n", filename);
+
+                int found_index = -1;
+                int permitted = 0;
+                FileLocation file_copy;
+                StorageServer* ss = NULL;
+
+                pthread_mutex_lock(&g_system_mutex);
+                for (int i = 0; i < g_num_files; i++) {
+                    if (strcmp(file_directory[i].filename, filename) == 0) {
+                        found_index = i;
+                        if (check_permission(&file_directory[i], username, 'R')) {
+                            permitted = 1;
+                            file_copy = file_directory[i]; // Make a copy
+                            for (int j = 0; j < g_num_servers; j++) {
+                                if (strcmp(server_list[j].ss_ip_addr, file_copy.ss_ip_addr) == 0 &&
+                                    server_list[j].ss_client_port == file_copy.ss_client_port) {
+                                    ss = &server_list[j];
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                pthread_mutex_unlock(&g_system_mutex);
+
+                if (found_index == -1) {
+                    const char* err_msg = "ERROR: File not found.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                if (!permitted) {
+                    const char* err_msg = "ERROR: Access Denied.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                if (ss == NULL) {
+                    const char* err_msg = "ERROR: Could not find SS for file. Directory out of sync.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+
+                char* file_content = malloc(EXEC_OUTPUT_BUFFER_SIZE);
+                if (file_content == NULL) {
+                    const char* err_msg = "ERROR: NM failed to allocate memory for exec.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                if (get_file_content_from_ss(ss->ss_ip_addr, ss->ss_client_port, file_copy.filename, file_content, EXEC_OUTPUT_BUFFER_SIZE) != 0) {
+                    const char* err_msg = "ERROR: NM failed to fetch file from SS.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    free(file_content);
+                    continue;
+                }
+                
+                printf("  Executing content:\n%s\n", file_content);
+                FILE* pipe = popen(file_content, "r");
+                free(file_content); 
+
+                if (pipe == NULL) {
+                    const char* err_msg = "ERROR: NM failed to execute command.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+
+                char* output_buffer = malloc(EXEC_OUTPUT_BUFFER_SIZE);
+                if (output_buffer == NULL) {
+                    const char* err_msg = "ERROR: NM failed to allocate memory for output.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    pclose(pipe);
+                    continue;
+                }
+                
+                ssize_t output_size = fread(output_buffer, 1, EXEC_OUTPUT_BUFFER_SIZE - 1, pipe);
+                output_buffer[output_size] = '\0';
+                pclose(pipe);
+
+                printf("  Sending output to client:\n%s\n", output_buffer);
+                write(client_socket, output_buffer, output_size);
+                free(output_buffer);
 
             } else {
                 const char* ack = "ERROR: Unknown command.\n";
@@ -859,5 +1125,3 @@ int main() {
     close(server_fd);
     return 0;
 }
-
-
