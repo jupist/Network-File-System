@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <pthread.h>
 #include <time.h>     
+#include <stdarg.h>  // For va_list
 #include "common.h"
 
 /*
@@ -45,32 +46,131 @@ typedef struct {
     int client_socket_fd; 
 } ClientInfo;
 
-// --- **** NEW: STRUCTURE FOR FILE LOCKS **** ---
 typedef struct {
     char filename[256];
     int sentence_num;
     char username[256]; // Who holds the lock
 } FileLock;
 
+// --- **** Global Defines **** ---
 #define MAX_FILES 100
 #define MAX_SERVERS 10
 #define MAX_CLIENTS 50 
-#define MAX_LOCKS 50 // Max concurrent sentence locks
+#define MAX_LOCKS 50
 #define EXEC_OUTPUT_BUFFER_SIZE 8192 
+#define NM_REGISTRY_FILE "nm_registry.dat"
+#define NM_LOG_FILE "nameserver.log"
 
+// --- **** Global Variables **** ---
 FileLocation file_directory[MAX_FILES];
 StorageServer server_list[MAX_SERVERS];
 ClientInfo client_list[MAX_CLIENTS]; 
-FileLock g_file_locks[MAX_LOCKS]; // NEW: Global lock list
+FileLock g_file_locks[MAX_LOCKS];
 int g_num_files = 0;
 int g_num_servers = 0;
 int g_num_clients = 0; 
-int g_num_locks = 0; // NEW: Global lock counter
+int g_num_locks = 0;
 
+// --- **** Global Mutexes **** ---
 pthread_mutex_t g_system_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 
-// --- (All helper functions are unchanged from the previous step) ---
+/*
+ * Writes a formatted message to the log file in a thread-safe way.
+ */
+void log_message(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+
+    time_t now = time(NULL);
+    char time_buf[64];
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+    pthread_mutex_lock(&g_log_mutex);
+    
+    FILE* log_file = fopen(NM_LOG_FILE, "a");
+    if (log_file) {
+        fprintf(log_file, "[%s] ", time_buf);
+        vfprintf(log_file, format, args);
+        fprintf(log_file, "\n");
+        fclose(log_file);
+    }
+    
+    pthread_mutex_unlock(&g_log_mutex);
+    va_end(args);
+}
+
+/*
+ * Saves the current file directory state to disk.
+ * This function is "unsafe" and MUST be called while g_system_mutex is HELD.
+ */
+void save_registry_to_disk_unsafe() {
+    FILE* file = fopen(NM_REGISTRY_FILE, "wb"); // "wb" = Write Binary
+    if (file == NULL) {
+        log_message("CRITICAL: (Persistence) Failed to open registry for saving: %m");
+        return;
+    }
+
+    if (fwrite(&g_num_files, sizeof(int), 1, file) != 1) {
+        log_message("CRITICAL: (Persistence) Failed to write file count to registry: %m");
+        fclose(file);
+        return;
+    }
+
+    if (g_num_files > 0) {
+        if (fwrite(file_directory, sizeof(FileLocation), g_num_files, file) != g_num_files) {
+            log_message("CRITICAL: (Persistence) Failed to write file data to registry: %m");
+            fclose(file);
+            return;
+        }
+    }
+
+    fclose(file);
+    log_message("INFO: (Persistence) System state saved to disk (%d files).", g_num_files);
+}
+
+/*
+ * Loads the file directory state from disk on startup.
+ * Runs before any threads, so no mutex is needed.
+ */
+void load_registry_from_disk() {
+    FILE* file = fopen(NM_REGISTRY_FILE, "rb"); // "rb" = Read Binary
+    if (file == NULL) {
+        log_message("INFO: (Persistence) No existing registry file found. Starting fresh.");
+        return;
+    }
+
+    if (fread(&g_num_files, sizeof(int), 1, file) != 1) {
+        log_message("ERROR: (Persistence) Failed to read file count. Starting fresh.");
+        g_num_files = 0;
+        fclose(file);
+        return;
+    }
+
+    if (g_num_files < 0 || g_num_files > MAX_FILES) {
+        log_message("ERROR: (Persistence) Registry file corrupted (count=%d). Starting fresh.", g_num_files);
+        g_num_files = 0;
+        fclose(file);
+        return;
+    }
+
+    if (g_num_files > 0) {
+        if (fread(file_directory, sizeof(FileLocation), g_num_files, file) != g_num_files) {
+            log_message("ERROR: (Persistence) Failed to read file data. Starting fresh.");
+            g_num_files = 0;
+            fclose(file);
+            return;
+        }
+    }
+
+    fclose(file);
+    log_message("INFO: (Persistence) Successfully loaded %d files from registry.", g_num_files);
+}
+
+
+// --- (SS Forwarding Helper Functions) ---
+
 int forward_create_to_ss(const char* ss_ip, int ss_nm_port, const char* filename) {
     int ss_sock;
     struct sockaddr_in ss_addr;
@@ -78,31 +178,31 @@ int forward_create_to_ss(const char* ss_ip, int ss_nm_port, const char* filename
     char response[BUFFER_SIZE];
 
     if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("NM (SS-Client): socket failed");
+        log_message("ERROR: (SS-Client) socket failed: %m");
         return -1;
     }
     ss_addr.sin_family = AF_INET;
     ss_addr.sin_port = htons(ss_nm_port);
     if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) {
-        perror("NM (SS-Client): invalid address");
+        log_message("ERROR: (SS-Client) invalid address");
         close(ss_sock);
         return -1;
     }
     if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) {
-        perror("NM (SS-Client): connect to SS failed");
+        log_message("ERROR: (SS-Client) connect to SS at %s:%d failed: %m", ss_ip, ss_nm_port);
         close(ss_sock);
         return -1;
     }
     snprintf(command, sizeof(command), "CREATE_FILE %s\n", filename);
     if (write(ss_sock, command, strlen(command)) < 0) {
-        perror("NM (SS-Client): write to SS failed");
+        log_message("ERROR: (SS-Client) write to SS failed: %m");
         close(ss_sock);
         return -1;
     }
     ssize_t bytes_read = read(ss_sock, response, sizeof(response) - 1);
     close(ss_sock); 
     if (bytes_read <= 0) {
-        printf("NM (SS-Client): No response from SS.\n");
+        log_message("ERROR: (SS-Client) No response from SS for CREATE.");
         return -1;
     }
     response[bytes_read] = '\0';
@@ -120,31 +220,31 @@ int forward_delete_to_ss(const char* ss_ip, int ss_nm_port, const char* filename
     char response[BUFFER_SIZE];
 
     if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("NM (SS-Client): socket failed");
+        log_message("ERROR: (SS-Client) socket failed: %m");
         return -1;
     }
     ss_addr.sin_family = AF_INET;
     ss_addr.sin_port = htons(ss_nm_port);
     if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) {
-        perror("NM (SS-Client): invalid address");
+        log_message("ERROR: (SS-Client) invalid address");
         close(ss_sock);
         return -1;
     }
     if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) {
-        perror("NM (SS-Client): connect to SS failed");
+        log_message("ERROR: (SS-Client) connect to SS at %s:%d failed: %m", ss_ip, ss_nm_port);
         close(ss_sock);
         return -1;
     }
     snprintf(command, sizeof(command), "DELETE_FILE %s\n", filename);
     if (write(ss_sock, command, strlen(command)) < 0) {
-        perror("NM (SS-Client): write to SS failed");
+        log_message("ERROR: (SS-Client) write to SS failed: %m");
         close(ss_sock);
         return -1;
     }
     ssize_t bytes_read = read(ss_sock, response, sizeof(response) - 1);
     close(ss_sock); 
     if (bytes_read <= 0) {
-        printf("NM (SS-Client): No response from SS.\n");
+        log_message("ERROR: (SS-Client) No response from SS for DELETE.");
         return -1;
     }
     response[bytes_read] = '\0';
@@ -189,7 +289,7 @@ int get_metadata_from_ss(const char* ss_ip, int ss_nm_port, const char* filename
                  modified_date, modified_time);
         
         if (items != 6) { 
-            printf("NM: Failed to parse metadata response: %s\n", response);
+            log_message("ERROR: Failed to parse metadata response: %s", response);
             return -1;
         }
         
@@ -208,25 +308,25 @@ int get_file_content_from_ss(const char* ss_ip, int ss_client_port, const char* 
     char command[BUFFER_SIZE];
 
     if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) { 
-        perror("NM (SS-Client): socket failed");
+        log_message("ERROR: (SS-Client) socket failed: %m");
         return -1; 
     }
     ss_addr.sin_family = AF_INET;
     ss_addr.sin_port = htons(ss_client_port);
     if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) { 
-        perror("NM (SS-Client): invalid address");
+        log_message("ERROR: (SS-Client) invalid address");
         close(ss_sock); 
         return -1; 
     }
     if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) { 
-        perror("NM (SS-Client): connect to SS failed");
+        log_message("ERROR: (SS-Client) connect to SS at %s:%d failed: %m", ss_ip, ss_client_port);
         close(ss_sock); 
         return -1; 
     }
     
     snprintf(command, sizeof(command), "READ_FILE %s\n", filename);
     if (write(ss_sock, command, strlen(command)) < 0) { 
-        perror("NM (SS-Client): write to SS failed");
+        log_message("ERROR: (SS-Client) write to SS failed: %m");
         close(ss_sock); 
         return -1; 
     }
@@ -242,12 +342,62 @@ int get_file_content_from_ss(const char* ss_ip, int ss_client_port, const char* 
     close(ss_sock);
     
     if (bytes_read < 0) {
-        perror("NM (SS-Client): read file content failed");
+        log_message("ERROR: (SS-Client) read file content failed: %m");
         return -1;
     }
     
     return 0; // Success
 }
+
+int forward_undo_to_ss(const char* ss_ip, int ss_nm_port, const char* filename) {
+    int ss_sock;
+    struct sockaddr_in ss_addr;
+    char command[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+
+    if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        log_message("ERROR: (SS-Client-Undo) socket failed: %m");
+        return -1;
+    }
+    ss_addr.sin_family = AF_INET;
+    ss_addr.sin_port = htons(ss_nm_port);
+    if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) {
+        log_message("ERROR: (SS-Client-Undo) invalid address");
+        close(ss_sock);
+        return -1;
+    }
+    if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) {
+        log_message("ERROR: (SS-Client-Undo) connect to SS failed: %m");
+        close(ss_sock);
+        return -1;
+    }
+    
+    snprintf(command, sizeof(command), "UNDO_FILE %s\n", filename);
+    if (write(ss_sock, command, strlen(command)) < 0) {
+        log_message("ERROR: (SS-Client-Undo) write to SS failed: %m");
+        close(ss_sock);
+        return -1;
+    }
+    
+    ssize_t bytes_read = read(ss_sock, response, sizeof(response) - 1);
+    close(ss_sock); 
+    
+    if (bytes_read <= 0) {
+        log_message("ERROR: (SS-Client-Undo) No response from SS.");
+        return -1;
+    }
+    response[bytes_read] = '\0';
+    
+    if (strncmp(response, "ACK_UNDO_SUCCESS", 16) == 0) {
+        return 0; // Success
+    } else if (strncmp(response, "ACK_UNDO_FAIL_NO_BAK", 20) == 0) {
+        return -2; // No backup file
+    } else {
+        return -1; // Other failure
+    }
+}
+
+// --- (Permission & Time Helpers) ---
 
 int check_permission(FileLocation* file, const char* user_requesting, char permission_needed) {
     if (strcmp(file->owner_username, user_requesting) == 0) {
@@ -273,54 +423,6 @@ void get_current_timestamp(char* buffer, int len) {
     strftime(buffer, len, "%Y-%m-%d %H:%M", tm_info);
 }
 
-int forward_undo_to_ss(const char* ss_ip, int ss_nm_port, const char* filename) {
-    int ss_sock;
-    struct sockaddr_in ss_addr;
-    char command[BUFFER_SIZE];
-    char response[BUFFER_SIZE];
-
-    if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("NM (SS-Client-Undo): socket failed");
-        return -1;
-    }
-    ss_addr.sin_family = AF_INET;
-    ss_addr.sin_port = htons(ss_nm_port);
-    if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) {
-        perror("NM (SS-Client-Undo): invalid address");
-        close(ss_sock);
-        return -1;
-    }
-    if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) {
-        perror("NM (SS-Client-Undo): connect to SS failed");
-        close(ss_sock);
-        return -1;
-    }
-    
-    snprintf(command, sizeof(command), "UNDO_FILE %s\n", filename);
-    if (write(ss_sock, command, strlen(command)) < 0) {
-        perror("NM (SS-Client-Undo): write to SS failed");
-        close(ss_sock);
-        return -1;
-    }
-    
-    ssize_t bytes_read = read(ss_sock, response, sizeof(response) - 1);
-    close(ss_sock); 
-    
-    if (bytes_read <= 0) {
-        printf("NM (SS-Client-Undo): No response from SS.\n");
-        return -1;
-    }
-    response[bytes_read] = '\0';
-    
-    if (strncmp(response, "ACK_UNDO_SUCCESS", 16) == 0) {
-        return 0; // Success
-    } else if (strncmp(response, "ACK_UNDO_FAIL_NO_BAK", 20) == 0) {
-        return -2; // No backup file
-    } else {
-        return -1; // Other failure
-    }
-}
-
 // ---------------------------------------
 
 /*
@@ -335,13 +437,15 @@ void* handle_connection(void* arg) {
     getpeername(client_socket, (struct sockaddr*)&peer_addr, &peer_len);
     char peer_ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &peer_addr.sin_addr, peer_ip, sizeof(peer_ip));
+    
+    char err_msg[256]; // Buffer for sending error messages
 
     char buffer[BUFFER_SIZE];
     ssize_t bytes_read;
 
     bytes_read = read(client_socket, buffer, sizeof(buffer) - 1);
     if (bytes_read <= 0) {
-        printf("Connection closed before identification.\n");
+        log_message("INFO: Connection from %s closed before identification.", peer_ip);
         close(client_socket);
         return NULL;
     }
@@ -349,8 +453,7 @@ void* handle_connection(void* arg) {
 
     // 3. Identify the connection type
     if (strncmp(buffer, "REGISTER_SS", 11) == 0) {
-        // (This section is unchanged)
-        printf("New connection from a Storage Server (%s).\n", peer_ip);
+        log_message("INFO: New connection from a Storage Server (%s).", peer_ip);
         
         int ss_nm_port, ss_client_port;
         char* token;
@@ -362,7 +465,7 @@ void* handle_connection(void* arg) {
         ss_client_port = token ? atoi(token) : -1;
 
         if (ss_nm_port <= 0 || ss_client_port <= 0) {
-            printf("Failed to parse SS registration message.\n");
+            log_message("ERROR: Failed to parse SS registration message from %s.", peer_ip);
             close(client_socket);
             return NULL;
         }
@@ -374,43 +477,40 @@ void* handle_connection(void* arg) {
             new_ss->ss_nm_port = ss_nm_port;
             new_ss->ss_client_port = ss_client_port;
             strncpy(new_ss->ss_ip_addr, peer_ip, INET_ADDRSTRLEN);
-            printf("  Registered SS (NM Port %d, Client Port %d)\n", ss_nm_port, ss_client_port);
+            log_message("INFO: Registered SS at %s (NM Port %d, Client Port %d)", peer_ip, ss_nm_port, ss_client_port);
         }
 
         while ((token = strtok_r(NULL, " \n", &rest)) != NULL) {
-            if (g_num_files < MAX_FILES) {
-                FileLocation* new_file = &file_directory[g_num_files++];
-                strncpy(new_file->filename, token, 255);
-                new_file->filename[255] = '\0';
-                new_file->ss_client_port = ss_client_port;
-                strncpy(new_file->ss_ip_addr, peer_ip, INET_ADDRSTRLEN);
-                
-                strncpy(new_file->owner_username, "system", 255); 
-                new_file->num_permissions = 0; 
-                strncpy(new_file->last_accessed_by, "N/A", 255);
-                strncpy(new_file->last_accessed_ts, "N/A", 127);
-                
-                printf("  Registered file: %s\n", new_file->filename);
+            int file_exists = 0;
+            for(int i=0; i < g_num_files; i++) {
+                if (strcmp(file_directory[i].filename, token) == 0) {
+                    file_exists = 1;
+                    file_directory[i].ss_client_port = ss_client_port;
+                    strncpy(file_directory[i].ss_ip_addr, peer_ip, INET_ADDRSTRLEN);
+                    log_message("INFO: Re-linking existing file '%s' to SS at %s.", token, peer_ip);
+                    break;
+                }
+            }
+            if (!file_exists) {
+                 log_message("INFO: SS at %s registered new non-persistent file: %s", peer_ip, token);
             }
         }
         
         pthread_mutex_unlock(&g_system_mutex);
         
         close(client_socket);
-        printf("Storage Server registration complete. Connection closed.\n");
+        log_message("INFO: Storage Server registration complete. Connection closed.");
         return NULL; 
         
     } else if (strncmp(buffer, "REGISTER_CLIENT", 15) == 0) {
-        // (This section is unchanged)
-        printf("New connection from a Client (%s).\n", peer_ip);
-        
         char username[256]; 
         if (sscanf(buffer, "REGISTER_CLIENT %s", username) != 1) {
-            printf("  Failed to parse username. Closing connection.\n");
+            log_message("ERROR: Failed to parse username from REGISTER_CLIENT (%s).", peer_ip);
             close(client_socket);
             return NULL;
         }
         username[255] = '\0'; 
+        log_message("INFO: New connection from a Client (%s), user '%s'.", peer_ip, username);
 
         pthread_mutex_lock(&g_system_mutex);
         if (g_num_clients < MAX_CLIENTS) {
@@ -419,12 +519,11 @@ void* handle_connection(void* arg) {
             new_client->username[255] = '\0';
             strncpy(new_client->ip_addr, peer_ip, INET_ADDRSTRLEN);
             new_client->client_socket_fd = client_socket;
-            printf("  User '%s' registered from %s.\n", username, peer_ip);
+            log_message("INFO: User '%s' registered from %s.", username, peer_ip);
         } else {
-            printf("  Max clients reached. Rejecting %s.\n", username);
+            log_message("WARN: Max clients reached. Rejecting user '%s' from %s.", username, peer_ip);
         }
         pthread_mutex_unlock(&g_system_mutex);
-
 
         // 4. Enter a loop to handle commands from *this* client
         while ((bytes_read = read(client_socket, buffer, sizeof(buffer) - 1)) > 0) {
@@ -432,12 +531,10 @@ void* handle_connection(void* arg) {
             buffer[strcspn(buffer, "\n")] = 0; // Remove trailing newline
 
             if (strncmp(buffer, "VIEW", 4) == 0) {
-                // (This section is unchanged)
-                printf("Client requested VIEW\n");
+                log_message("INFO: User '%s' requested VIEW.", username);
                 
                 int all_flag = 0;
                 int long_flag = 0;
-
                 if (strstr(buffer, "-al") != NULL || strstr(buffer, "-la") != NULL) {
                     all_flag = 1;
                     long_flag = 1;
@@ -468,7 +565,6 @@ void* handle_connection(void* arg) {
                         if (long_flag) {
                             int words = 0, chars = 0;
                             char created_ts[128], modified_ts[128]; 
-                            
                             StorageServer* ss = NULL;
                             for (int j = 0; j < g_num_servers; j++) {
                                 if (strcmp(server_list[j].ss_ip_addr, file_directory[i].ss_ip_addr) == 0 &&
@@ -480,10 +576,9 @@ void* handle_connection(void* arg) {
                             
                             if (ss != NULL) {
                                 pthread_mutex_unlock(&g_system_mutex);
-                                int res = get_metadata_from_ss(ss->ss_ip_addr, ss->ss_nm_port, file_directory[i].filename, 
+                                get_metadata_from_ss(ss->ss_ip_addr, ss->ss_nm_port, file_directory[i].filename, 
                                                                &words, &chars, created_ts, modified_ts, 128);
                                 pthread_mutex_lock(&g_system_mutex);
-                                (void)res; 
                             }
                             
                             offset += sprintf(response_buffer + offset,
@@ -514,15 +609,13 @@ void* handle_connection(void* arg) {
                 }
             
             } else if (strncmp(buffer, "READ", 4) == 0) {
-                // (This section is unchanged)
                 char filename[256];
                 if (sscanf(buffer, "READ %s", filename) != 1) {
-                    const char* err_msg = "ERROR: Invalid READ format. Use: READ <filename>\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid READ format. Use: READ <filename>\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-                
-                printf("Client requested READ for '%s'\n", filename);
+                log_message("INFO: User '%s' requested READ for '%s'.", username, filename);
 
                 int found = 0;
                 char ss_ip[INET_ADDRSTRLEN];
@@ -548,27 +641,25 @@ void* handle_connection(void* arg) {
 
                 char response_buffer[BUFFER_SIZE];
                 if (!found) {
-                    snprintf(response_buffer, sizeof(response_buffer), "ERROR: File not found.\n");
-                    printf("  File not found.\n");
+                    log_message("WARN: User '%s' failed READ for '%s': File not found.", username, filename);
+                    snprintf(response_buffer, sizeof(response_buffer), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
                 } else if (!permitted) {
-                    snprintf(response_buffer, sizeof(response_buffer), "ERROR: Access Denied.\n");
-                    printf("  Access Denied for user '%s'.\n", username);
+                    log_message("WARN: User '%s' failed READ for '%s': Access Denied.", username, filename);
+                    snprintf(response_buffer, sizeof(response_buffer), "ERROR %d: Access Denied.\n", ERROR_ACCESS_DENIED);
                 } else {
+                    log_message("INFO: User '%s' granted READ for '%s'. Sending location: %s %d", username, filename, ss_ip, ss_port);
                     snprintf(response_buffer, sizeof(response_buffer), "SS_LOCATION %s %d\n", ss_ip, ss_port);
-                    printf("  Access Granted. Sending location to client: %s %d\n", ss_ip, ss_port);
                 }
                 write(client_socket, response_buffer, strlen(response_buffer));
             
             } else if (strncmp(buffer, "STREAM", 6) == 0) {
-                // (This section is unchanged)
                 char filename[256];
                 if (sscanf(buffer, "STREAM %s", filename) != 1) {
-                    const char* err_msg = "ERROR: Invalid STREAM format. Use: STREAM <filename>\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid STREAM format. Use: STREAM <filename>\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-                
-                printf("Client requested STREAM for '%s'\n", filename);
+                log_message("INFO: User '%s' requested STREAM for '%s'.", username, filename);
 
                 int found = 0;
                 char ss_ip[INET_ADDRSTRLEN];
@@ -583,7 +674,6 @@ void* handle_connection(void* arg) {
                             permitted = 1;
                             strncpy(ss_ip, file_directory[i].ss_ip_addr, INET_ADDRSTRLEN);
                             ss_port = file_directory[i].ss_client_port;
-                            
                             get_current_timestamp(file_directory[i].last_accessed_ts, 128);
                             strncpy(file_directory[i].last_accessed_by, username, 255);
                         }
@@ -594,26 +684,25 @@ void* handle_connection(void* arg) {
 
                 char response_buffer[BUFFER_SIZE];
                 if (!found) {
-                    snprintf(response_buffer, sizeof(response_buffer), "ERROR: File not found.\n");
-                    printf("  File not found.\n");
+                    log_message("WARN: User '%s' failed STREAM for '%s': File not found.", username, filename);
+                    snprintf(response_buffer, sizeof(response_buffer), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
                 } else if (!permitted) {
-                    snprintf(response_buffer, sizeof(response_buffer), "ERROR: Access Denied.\n");
-                    printf("  Access Denied for user '%s'.\n", username);
+                    log_message("WARN: User '%s' failed STREAM for '%s': Access Denied.", username, filename);
+                    snprintf(response_buffer, sizeof(response_buffer), "ERROR %d: Access Denied.\n", ERROR_ACCESS_DENIED);
                 } else {
+                    log_message("INFO: User '%s' granted STREAM for '%s'. Sending location: %s %d", username, filename, ss_ip, ss_port);
                     snprintf(response_buffer, sizeof(response_buffer), "SS_LOCATION %s %d\n", ss_ip, ss_port);
-                    printf("  Access Granted. Sending location to client: %s %d\n", ss_ip, ss_port);
                 }
                 write(client_socket, response_buffer, strlen(response_buffer));
 
             } else if (strncmp(buffer, "CREATE", 6) == 0) {
-                // (This section is unchanged)
                 char filename[256];
                 if (sscanf(buffer, "CREATE %s", filename) != 1) {
-                    const char* err_msg = "ERROR: Invalid CREATE format. Use: CREATE <filename>\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid CREATE format. Use: CREATE <filename>\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-                printf("Client requested CREATE for '%s'\n", filename);
+                log_message("INFO: User '%s' requested CREATE for '%s'.", username, filename);
 
                 int found = 0;
                 pthread_mutex_lock(&g_system_mutex);
@@ -625,14 +714,16 @@ void* handle_connection(void* arg) {
                 }
                 if (found) {
                     pthread_mutex_unlock(&g_system_mutex);
-                    const char* err_msg = "ERROR: File already exists.\n";
+                    log_message("WARN: User '%s' failed CREATE for '%s': File already exists.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: File already exists.\n", ERROR_FILE_EXISTS);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
 
                 if (g_num_servers == 0) {
                     pthread_mutex_unlock(&g_system_mutex);
-                    const char* err_msg = "ERROR: No Storage Servers available.\n";
+                    log_message("ERROR: User '%s' failed CREATE for '%s': No Storage Servers available.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: No Storage Servers available.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
@@ -652,32 +743,33 @@ void* handle_connection(void* arg) {
                         strncpy(new_file->filename, filename, 255);
                         new_file->ss_client_port = ss_client_port;
                         strncpy(new_file->ss_ip_addr, ss_ip, INET_ADDRSTRLEN);
-
                         strncpy(new_file->owner_username, username, 255); 
                         new_file->num_permissions = 0; 
-                        
                         strncpy(new_file->last_accessed_by, "N/A", 255);
                         strncpy(new_file->last_accessed_ts, "N/A", 127);
                         
-                        printf("  Successfully registered new file '%s' for owner '%s'\n", filename, username);
+                        save_registry_to_disk_unsafe(); // Save persistence
+                        log_message("INFO: User '%s' successfully created file '%s'.", username, filename);
                         write(client_socket, "File created successfully.\n", sizeof("File created successfully.\n") - 1);
                     } else {
+                        log_message("ERROR: User '%s' failed CREATE for '%s': NM file directory is full.", username, filename);
                         write(client_socket, "ERROR: NM file directory is full.\n", sizeof("ERROR: NM file directory is full.\n") - 1);
                     }
                     pthread_mutex_unlock(&g_system_mutex);
                 } else {
-                    write(client_socket, "ERROR: Storage Server failed to create file.\n", sizeof("ERROR: Storage Server failed to create file.\n") - 1);
+                    log_message("ERROR: User '%s' failed CREATE for '%s': SS failed to create file.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Storage Server failed to create file.\n", ERROR_SERVER_ERROR);
+                    write(client_socket, err_msg, strlen(err_msg));
                 }
             
             } else if (strncmp(buffer, "DELETE", 6) == 0) {
-                // (This section is unchanged)
                 char filename[256];
                 if (sscanf(buffer, "DELETE %s", filename) != 1) {
-                    const char* err_msg = "ERROR: Invalid DELETE format. Use: DELETE <filename>\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid DELETE format. Use: DELETE <filename>\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-                printf("Client requested DELETE for '%s'\n", filename);
+                log_message("INFO: User '%s' requested DELETE for '%s'.", username, filename);
 
                 int found_index = -1;
                 char ss_ip[INET_ADDRSTRLEN];
@@ -706,20 +798,22 @@ void* handle_connection(void* arg) {
                 pthread_mutex_unlock(&g_system_mutex);
 
                 if (found_index == -1) {
-                    const char* err_msg = "ERROR: File not found.\n";
+                    log_message("WARN: User '%s' failed DELETE for '%s': File not found.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
                 
                 if (!permitted) {
-                    const char* err_msg = "ERROR: Access Denied. Only the owner can delete a file.\n";
+                    log_message("WARN: User '%s' failed DELETE for '%s': Access Denied (not owner).", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Access Denied. Only the owner can delete a file.\n", ERROR_ACCESS_DENIED);
                     write(client_socket, err_msg, strlen(err_msg));
-                    printf("  Access Denied for user '%s'. Not owner.\n", username);
                     continue;
                 }
 
                 if (ss_nm_port == -1) {
-                    const char* err_msg = "ERROR: Could not find SS for file. Directory out of sync.\n";
+                    log_message("ERROR: User '%s' failed DELETE for '%s': SS not found (directory out of sync).", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Could not find SS for file. Directory out of sync.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
@@ -728,22 +822,23 @@ void* handle_connection(void* arg) {
 
                 if (result == 0) {
                     pthread_mutex_lock(&g_system_mutex);
-                    printf("  Deleting file at index %d\n", found_index);
                     for (int i = found_index; i < g_num_files - 1; i++) {
                         file_directory[i] = file_directory[i + 1];
                     }
                     g_num_files--;
                     
-                    printf("  Successfully deleted file '%s' from directory.\n", filename);
+                    save_registry_to_disk_unsafe(); // Save persistence
+                    log_message("INFO: User '%s' successfully deleted file '%s'.", username, filename);
                     write(client_socket, "File deleted successfully.\n", sizeof("File deleted successfully.\n") - 1);
                     pthread_mutex_unlock(&g_system_mutex);
                 } else {
-                    write(client_socket, "ERROR: Storage Server failed to delete file.\n", sizeof("ERROR: Storage Server failed to delete file.\n") - 1);
+                    log_message("ERROR: User '%s' failed DELETE for '%s': SS failed to delete file.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Storage Server failed to delete file.\n", ERROR_SERVER_ERROR);
+                    write(client_socket, err_msg, strlen(err_msg));
                 }
 
             } else if (strncmp(buffer, "LIST", 4) == 0) {
-                // (This section is unchanged)
-                printf("Client requested LIST\n");
+                log_message("INFO: User '%s' requested LIST.", username);
                 
                 char response_buffer[BUFFER_SIZE] = {0};
                 int offset = 0;
@@ -763,21 +858,19 @@ void* handle_connection(void* arg) {
                 write(client_socket, response_buffer, strlen(response_buffer));
 
             } else if (strncmp(buffer, "ADDACCESS", 9) == 0) {
-                // (This section is unchanged)
                 char perm_char_str[2], target_filename[256], target_username[256];
                 if (sscanf(buffer, "ADDACCESS %1s %s %s", perm_char_str, target_filename, target_username) != 3) {
-                    const char* err_msg = "ERROR: Invalid format. Use: ADDACCESS <R|W> <filename> <username>\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid format. Use: ADDACCESS <R|W> <filename> <username>\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
                 char perm = perm_char_str[0];
                 if (perm != 'R' && perm != 'W') {
-                    const char* err_msg = "ERROR: Permission must be 'R' or 'W'.\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Permission must be 'R' or 'W'.\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-
-                printf("User '%s' requested ADDACCESS %c for '%s' to user '%s'\n", username, perm, target_filename, target_username);
+                log_message("INFO: User '%s' requested ADDACCESS %c for '%s' to user '%s'", username, perm, target_filename, target_username);
 
                 pthread_mutex_lock(&g_system_mutex);
                 int found_index = -1;
@@ -790,14 +883,16 @@ void* handle_connection(void* arg) {
 
                 if (found_index == -1) {
                     pthread_mutex_unlock(&g_system_mutex);
-                    const char* err_msg = "ERROR: File not found.\n";
+                    log_message("WARN: User '%s' failed ADDACCESS for '%s': File not found.", username, target_filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
 
                 if (strcmp(file_directory[found_index].owner_username, username) != 0) {
                     pthread_mutex_unlock(&g_system_mutex);
-                    const char* err_msg = "ERROR: You are not the owner of this file.\n";
+                    log_message("WARN: User '%s' failed ADDACCESS for '%s': Not owner.", username, target_filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: You are not the owner of this file.\n", ERROR_ACCESS_DENIED);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
@@ -806,24 +901,24 @@ void* handle_connection(void* arg) {
                     AccessControl* new_perm = &file_directory[found_index].acl[file_directory[found_index].num_permissions++];
                     strncpy(new_perm->username, target_username, 255);
                     new_perm->permission = perm;
-                    printf("  Access granted.\n");
+                    
+                    save_registry_to_disk_unsafe(); // Save persistence
+                    log_message("INFO: Access granted for '%s' to user '%s'.", target_filename, target_username);
                     write(client_socket, "Access granted successfully.\n", sizeof("Access granted successfully.\n") - 1);
                 } else {
-                    const char* err_msg = "ERROR: File has reached its maximum permission entries.\n";
-                    write(client_socket, err_msg, strlen(err_msg));
+                    log_message("WARN: User '%s' failed ADDACCESS for '%s': Max permissions reached.", username, target_filename);
+                    write(client_socket, "ERROR: File has reached its maximum permission entries.\n", 56);
                 }
                 pthread_mutex_unlock(&g_system_mutex);
 
             } else if (strncmp(buffer, "REMACCESS", 9) == 0) {
-                // (This section is unchanged)
                 char target_filename[256], target_username[256];
                 if (sscanf(buffer, "REMACCESS %s %s", target_filename, target_username) != 2) {
-                    const char* err_msg = "ERROR: Invalid format. Use: REMACCESS <filename> <username>\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid format. Use: REMACCESS <filename> <username>\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-
-                printf("User '%s' requested REMACCESS for '%s' from user '%s'\n", username, target_filename, target_username);
+                log_message("INFO: User '%s' requested REMACCESS for '%s' from user '%s'", username, target_filename, target_username);
 
                 pthread_mutex_lock(&g_system_mutex);
                 int file_index = -1;
@@ -836,14 +931,16 @@ void* handle_connection(void* arg) {
 
                 if (file_index == -1) {
                     pthread_mutex_unlock(&g_system_mutex);
-                    const char* err_msg = "ERROR: File not found.\n";
+                    log_message("WARN: User '%s' failed REMACCESS for '%s': File not found.", username, target_filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
 
                 if (strcmp(file_directory[file_index].owner_username, username) != 0) {
                     pthread_mutex_unlock(&g_system_mutex);
-                    const char* err_msg = "ERROR: You are not the owner of this file.\n";
+                    log_message("WARN: User '%s' failed REMACCESS for '%s': Not owner.", username, target_filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: You are not the owner of this file.\n", ERROR_ACCESS_DENIED);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
@@ -858,7 +955,8 @@ void* handle_connection(void* arg) {
 
                 if (perm_index == -1) {
                     pthread_mutex_unlock(&g_system_mutex);
-                    const char* err_msg = "ERROR: That user does not have special permissions on this file.\n";
+                    log_message("WARN: User '%s' failed REMACCESS for '%s': User '%s' has no permissions.", username, target_filename, target_username);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: That user does not have special permissions on this file.\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
@@ -868,19 +966,19 @@ void* handle_connection(void* arg) {
                 }
                 file_directory[file_index].num_permissions--;
                 
-                printf("  Access removed.\n");
+                save_registry_to_disk_unsafe(); // Save persistence
+                log_message("INFO: Access for '%s' removed from user '%s'.", target_filename, target_username);
                 write(client_socket, "Access removed successfully.\n", sizeof("Access removed successfully.\n") - 1);
                 pthread_mutex_unlock(&g_system_mutex);
             
             } else if (strncmp(buffer, "INFO", 4) == 0) {
-                // (This section is unchanged)
                 char filename[256];
                 if (sscanf(buffer, "INFO %s", filename) != 1) {
-                    const char* err_msg = "ERROR: Invalid INFO format. Use: INFO <filename>\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid INFO format. Use: INFO <filename>\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-                printf("Client requested INFO for '%s'\n", filename);
+                log_message("INFO: User '%s' requested INFO for '%s'.", username, filename);
 
                 int found_index = -1;
                 int permitted = 0;
@@ -900,16 +998,17 @@ void* handle_connection(void* arg) {
 
                 if (found_index == -1) {
                     pthread_mutex_unlock(&g_system_mutex);
-                    const char* err_msg = "ERROR: File not found.\n";
+                    log_message("WARN: User '%s' failed INFO for '%s': File not found.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
 
                 if (!permitted) {
                     pthread_mutex_unlock(&g_system_mutex);
-                    const char* err_msg = "ERROR: Access Denied.\n";
+                    log_message("WARN: User '%s' failed INFO for '%s': Access Denied.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Access Denied.\n", ERROR_ACCESS_DENIED);
                     write(client_socket, err_msg, strlen(err_msg));
-                    printf("  Access Denied for user '%s'.\n", username);
                     continue;
                 }
 
@@ -925,7 +1024,8 @@ void* handle_connection(void* arg) {
                 
                 if (ss == NULL) {
                     pthread_mutex_unlock(&g_system_mutex);
-                    const char* err_msg = "ERROR: Could not find SS for file. Directory out of sync.\n";
+                    log_message("ERROR: User '%s' failed INFO for '%s': SS not found (directory out of sync).", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Could not find SS for file. Directory out of sync.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
@@ -940,7 +1040,8 @@ void* handle_connection(void* arg) {
                 char created_ts[128], modified_ts[128]; 
 
                 if (get_metadata_from_ss(ss_ip, ss_nm_port, file_copy.filename, &words, &chars, created_ts, modified_ts, 128) != 0) {
-                    const char* err_msg = "ERROR: Failed to retrieve file metadata from Storage Server.\n";
+                    log_message("ERROR: User '%s' failed INFO for '%s': Failed to get metadata from SS.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Failed to retrieve file metadata from Storage Server.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
@@ -950,27 +1051,24 @@ void* handle_connection(void* arg) {
                 offset += sprintf(response_buffer + offset, "--> Created: %s\n", created_ts);
                 offset += sprintf(response_buffer + offset, "--> Last Modified: %s\n", modified_ts);
                 offset += sprintf(response_buffer + offset, "--> Size: %d bytes\n", chars); 
-                
                 offset += sprintf(response_buffer + offset, "--> Access: %s (RW)\n", file_copy.owner_username);
                 for (int i = 0; i < file_copy.num_permissions; i++) {
                     offset += sprintf(response_buffer + offset, "-->          %s (%s)\n", 
                                       file_copy.acl[i].username, 
                                       file_copy.acl[i].permission == 'W' ? "RW" : "R"); 
                 }
-                
                 offset += sprintf(response_buffer + offset, "--> Last Accessed: %s by %s\n", file_copy.last_accessed_ts, file_copy.last_accessed_by); 
 
                 write(client_socket, response_buffer, offset);
             
             } else if (strncmp(buffer, "EXEC", 4) == 0) {
-                // (This section is unchanged)
                 char filename[256];
                 if (sscanf(buffer, "EXEC %s", filename) != 1) {
-                    const char* err_msg = "ERROR: Invalid EXEC format. Use: EXEC <filename>\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid EXEC format. Use: EXEC <filename>\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-                printf("Client requested EXEC for '%s'\n", filename);
+                log_message("INFO: User '%s' requested EXEC for '%s'.", username, filename);
 
                 int found_index = -1;
                 int permitted = 0;
@@ -998,48 +1096,55 @@ void* handle_connection(void* arg) {
                 pthread_mutex_unlock(&g_system_mutex);
 
                 if (found_index == -1) {
-                    const char* err_msg = "ERROR: File not found.\n";
+                    log_message("WARN: User '%s' failed EXEC for '%s': File not found.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
                 if (!permitted) {
-                    const char* err_msg = "ERROR: Access Denied.\n";
+                    log_message("WARN: User '%s' failed EXEC for '%s': Access Denied.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Access Denied.\n", ERROR_ACCESS_DENIED);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
                 if (ss == NULL) {
-                    const char* err_msg = "ERROR: Could not find SS for file. Directory out of sync.\n";
+                    log_message("ERROR: User '%s' failed EXEC for '%s': SS not found (directory out of sync).", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Could not find SS for file. Directory out of sync.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
 
                 char* file_content = malloc(EXEC_OUTPUT_BUFFER_SIZE);
                 if (file_content == NULL) {
-                    const char* err_msg = "ERROR: NM failed to allocate memory for exec.\n";
+                    log_message("CRITICAL: NM failed to allocate memory for exec.");
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: NM failed to allocate memory for exec.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
                 
                 if (get_file_content_from_ss(ss->ss_ip_addr, ss->ss_client_port, file_copy.filename, file_content, EXEC_OUTPUT_BUFFER_SIZE) != 0) {
-                    const char* err_msg = "ERROR: NM failed to fetch file from SS.\n";
+                    log_message("ERROR: NM failed to fetch file '%s' from SS for EXEC.", filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: NM failed to fetch file from SS.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     free(file_content);
                     continue;
                 }
                 
-                printf("  Executing content:\n%s\n", file_content);
+                log_message("INFO: Executing content for '%s'...", filename);
                 FILE* pipe = popen(file_content, "r");
                 free(file_content); 
 
                 if (pipe == NULL) {
-                    const char* err_msg = "ERROR: NM failed to execute command.\n";
+                    log_message("ERROR: NM failed to popen() for exec.");
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: NM failed to execute command.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
 
                 char* output_buffer = malloc(EXEC_OUTPUT_BUFFER_SIZE);
                 if (output_buffer == NULL) {
-                    const char* err_msg = "ERROR: NM failed to allocate memory for output.\n";
+                    log_message("CRITICAL: NM failed to allocate memory for exec output.");
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: NM failed to allocate memory for output.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     pclose(pipe);
                     continue;
@@ -1049,19 +1154,18 @@ void* handle_connection(void* arg) {
                 output_buffer[output_size] = '\0';
                 pclose(pipe);
 
-                printf("  Sending output to client:\n%s\n", output_buffer);
+                log_message("INFO: Sending exec output for '%s' to client.", filename);
                 write(client_socket, output_buffer, output_size);
                 free(output_buffer);
 
-            // --- **** NEW: UNDO Logic **** ---
             } else if (strncmp(buffer, "UNDO", 4) == 0) {
                 char filename[256];
                 if (sscanf(buffer, "UNDO %s", filename) != 1) {
-                    const char* err_msg = "ERROR: Invalid UNDO format. Use: UNDO <filename>\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid UNDO format. Use: UNDO <filename>\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-                printf("Client requested UNDO for '%s'\n", filename);
+                log_message("INFO: User '%s' requested UNDO for '%s'.", username, filename);
 
                 int found_index = -1;
                 char ss_ip[INET_ADDRSTRLEN];
@@ -1072,11 +1176,8 @@ void* handle_connection(void* arg) {
                 for (int i = 0; i < g_num_files; i++) {
                     if (strcmp(file_directory[i].filename, filename) == 0) {
                         found_index = i;
-                        // Per spec, "user B can also do it", but this is a
-                        // file modification. We'll require Write permission.
                         if (check_permission(&file_directory[i], username, 'W')) {
                             permitted = 1;
-                            // Find the SS
                             for (int j = 0; j < g_num_servers; j++) {
                                 if (strcmp(server_list[j].ss_ip_addr, file_directory[i].ss_ip_addr) == 0 &&
                                     server_list[j].ss_client_port == file_directory[i].ss_client_port) 
@@ -1093,43 +1194,48 @@ void* handle_connection(void* arg) {
                 pthread_mutex_unlock(&g_system_mutex);
 
                 if (found_index == -1) {
-                    const char* err_msg = "ERROR: File not found.\n";
+                    log_message("WARN: User '%s' failed UNDO for '%s': File not found.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
                 if (!permitted) {
-                    const char* err_msg = "ERROR: Access Denied (Write permission required to undo).\n";
+                    log_message("WARN: User '%s' failed UNDO for '%s': Access Denied (Write permission required).", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Access Denied (Write permission required to undo).\n", ERROR_ACCESS_DENIED);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
                 if (ss_nm_port == -1) {
-                    const char* err_msg = "ERROR: Could not find SS for file. Directory out of sync.\n";
+                    log_message("ERROR: User '%s' failed UNDO for '%s': SS not found (directory out of sync).", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Could not find SS for file. Directory out of sync.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
 
-                // Forward the command to the SS
                 int result = forward_undo_to_ss(ss_ip, ss_nm_port, filename);
 
                 if (result == 0) {
+                    log_message("INFO: User '%s' successfully reverted file '%s'.", username, filename);
                     write(client_socket, "Undo Successful!\n", 17);
-                } else if (result == -2) { // Special code for "No backup"
-                    write(client_socket, "ERROR: No undo history found for this file.\n", 44);
+                } else if (result == -2) {
+                    log_message("WARN: User '%s' failed UNDO for '%s': No undo history found.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: No undo history found for this file.\n", ERROR_NO_UNDO_HISTORY);
+                    write(client_socket, err_msg, strlen(err_msg));
                 } else {
-                    write(client_socket, "ERROR: Storage Server failed to undo file.\n", 43);
+                    log_message("ERROR: User '%s' failed UNDO for '%s': SS failed to undo file.", username, filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Storage Server failed to undo file.\n", ERROR_SERVER_ERROR);
+                    write(client_socket, err_msg, strlen(err_msg));
                 }
-            // --- **** END OF NEW BLOCK **** ---
             
             } else if (strncmp(buffer, "WRITE", 5) == 0) {
-                // (This section is unchanged)
                 char filename[256];
                 int sentence_num;
                 if (sscanf(buffer, "WRITE %s %d", filename, &sentence_num) != 2) {
-                    const char* err_msg = "ERROR: Invalid WRITE format. Use: WRITE <filename> <sentence_num>\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid WRITE format. Use: WRITE <filename> <sentence_num>\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-                printf("Client requested WRITE for '%s', sentence %d\n", filename, sentence_num);
+                log_message("INFO: User '%s' requested WRITE for '%s', sentence %d.", username, filename, sentence_num);
 
                 int found = 0;
                 char ss_ip[INET_ADDRSTRLEN];
@@ -1145,7 +1251,6 @@ void* handle_connection(void* arg) {
                         if (check_permission(&file_directory[i], username, 'W')) {
                             permitted = 1;
                             
-                            // Check for existing lock
                             for (int j = 0; j < g_num_locks; j++) {
                                 if (strcmp(g_file_locks[j].filename, filename) == 0 && g_file_locks[j].sentence_num == sentence_num) {
                                     already_locked = 1;
@@ -1155,21 +1260,18 @@ void* handle_connection(void* arg) {
                             }
 
                             if (!already_locked && g_num_locks < MAX_LOCKS) {
-                                // Grant lock
                                 FileLock* new_lock = &g_file_locks[g_num_locks++];
                                 strncpy(new_lock->filename, filename, 255);
                                 strncpy(new_lock->username, username, 255);
                                 new_lock->sentence_num = sentence_num;
                                 
-                                // Get SS location
                                 strncpy(ss_ip, file_directory[i].ss_ip_addr, INET_ADDRSTRLEN);
                                 ss_port = file_directory[i].ss_client_port;
-                                printf("  Lock granted to '%s'\n", username);
+                                log_message("INFO: Lock granted to '%s' for '%s' (sent %d).", username, filename, sentence_num);
                             } else if (already_locked) {
                                 // Lock is held
                             } else {
-                                // Too many locks
-                                already_locked = -1; // Use -1 to signal max locks
+                                already_locked = -1; // Signal max locks
                             }
                         }
                         break;
@@ -1179,36 +1281,39 @@ void* handle_connection(void* arg) {
 
                 char response_buffer[BUFFER_SIZE];
                 if (!found) {
-                    snprintf(response_buffer, sizeof(response_buffer), "ERROR: File not found.\n");
+                    log_message("WARN: User '%s' failed WRITE for '%s': File not found.", username, filename);
+                    snprintf(response_buffer, sizeof(response_buffer), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
                 } else if (!permitted) {
-                    snprintf(response_buffer, sizeof(response_buffer), "ERROR: Access Denied (Write permission required).\n");
+                    log_message("WARN: User '%s' failed WRITE for '%s': Access Denied (Write permission required).", username, filename);
+                    snprintf(response_buffer, sizeof(response_buffer), "ERROR %d: Access Denied (Write permission required).\n", ERROR_ACCESS_DENIED);
                 } else if (already_locked == 1) {
-                    snprintf(response_buffer, sizeof(response_buffer), "ERROR: Sentence is currently locked by '%s'.\n", locking_user);
+                    log_message("WARN: User '%s' failed WRITE for '%s': Sentence %d is locked by '%s'.", username, filename, sentence_num, locking_user);
+                    snprintf(response_buffer, sizeof(response_buffer), "ERROR %d: Sentence is currently locked by '%s'.\n", ERROR_FILE_LOCKED, locking_user);
                 } else if (already_locked == -1) {
-                    snprintf(response_buffer, sizeof(response_buffer), "ERROR: System is at maximum lock capacity. Try again later.\n");
+                    log_message("WARN: User '%s' failed WRITE for '%s': System is at maximum lock capacity.", username, filename);
+                    snprintf(response_buffer, sizeof(response_buffer), "ERROR %d: System is at maximum lock capacity. Try again later.\n", ERROR_MAX_LOCKS);
                 } else {
-                    // Success!
+                    log_message("INFO: User '%s' granted WRITE for '%s'. Sending location: %s %d", username, filename, ss_ip, ss_port);
                     snprintf(response_buffer, sizeof(response_buffer), "SS_LOCATION %s %d\n", ss_ip, ss_port);
                 }
                 write(client_socket, response_buffer, strlen(response_buffer));
             
             } else if (strncmp(buffer, "RELEASE_LOCK", 12) == 0) {
-                // (This section is unchanged)
                 char filename[256];
                 int sentence_num;
                 if (sscanf(buffer, "RELEASE_LOCK %s %d", filename, &sentence_num) != 2) {
-                    const char* err_msg = "ERROR: Invalid RELEASE_LOCK format.\n";
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid RELEASE_LOCK format.\n");
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
+                log_message("INFO: User '%s' requested RELEASE_LOCK for '%s' (sent %d).", username, filename, sentence_num);
 
-                printf("Client requested RELEASE_LOCK for '%s', sentence %d\n", filename, sentence_num);
                 pthread_mutex_lock(&g_system_mutex);
                 int lock_index = -1;
                 for (int i = 0; i < g_num_locks; i++) {
                     if (strcmp(g_file_locks[i].filename, filename) == 0 &&
                         g_file_locks[i].sentence_num == sentence_num &&
-                        strcmp(g_file_locks[i].username, username) == 0) // Only owner can release
+                        strcmp(g_file_locks[i].username, username) == 0)
                     {
                         lock_index = i;
                         break;
@@ -1216,52 +1321,53 @@ void* handle_connection(void* arg) {
                 }
 
                 if (lock_index != -1) {
-                    // Remove lock by shifting
                     for (int i = lock_index; i < g_num_locks - 1; i++) {
                         g_file_locks[i] = g_file_locks[i + 1];
                     }
                     g_num_locks--;
-                    printf("  Lock released.\n");
+                    log_message("INFO: Lock released for '%s' (sent %d) by '%s'.", filename, sentence_num, username);
                     write(client_socket, "ACK_LOCK_RELEASED\n", 18);
                 } else {
-                    printf("  Invalid lock release request.\n");
-                    write(client_socket, "ERROR: You do not hold that lock.\n", 34);
+                    log_message("WARN: User '%s' failed RELEASE_LOCK: Lock not held by user.", username);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: You do not hold that lock.\n", ERROR_ACCESS_DENIED);
+                    write(client_socket, err_msg, strlen(err_msg));
                 }
                 pthread_mutex_unlock(&g_system_mutex);
 
             } else {
-                const char* ack = "ERROR: Unknown command.\n";
-                write(client_socket, ack, strlen(ack));
+                log_message("WARN: User '%s' sent unknown command: %s", username, buffer);
+                snprintf(err_msg, sizeof(err_msg), "ERROR: Unknown command.\n");
+                write(client_socket, err_msg, strlen(err_msg));
             }
         }
     } else {
-        printf("Unknown connection type. Closing.\n");
+        log_message("WARN: Unknown connection type from %s. First line: %s", peer_ip, buffer);
     }
 
-    // --- (Unchanged: Remove client on disconnect) ---
+    // --- (Client Disconnect Logic) ---
     pthread_mutex_lock(&g_system_mutex);
     int client_index = -1;
+    char disconnected_username[256] = "unknown";
     for (int i = 0; i < g_num_clients; i++) {
         if (client_list[i].client_socket_fd == client_socket) {
             client_index = i;
+            strncpy(disconnected_username, client_list[i].username, 255);
             break;
         }
     }
 
     if (client_index != -1) {
-        printf("User '%s' disconnected. Removing from list.\n", client_list[client_index].username);
-        // --- **** FIX: Also release any locks held by this user **** ---
+        log_message("INFO: User '%s' disconnected. Removing from list.", disconnected_username);
+        
         for (int i = g_num_locks - 1; i >= 0; i--) { // Iterate backwards
-            if (strcmp(g_file_locks[i].username, client_list[client_index].username) == 0) {
-                printf("  User disconnected, releasing lock on %s (sent %d)\n", g_file_locks[i].filename, g_file_locks[i].sentence_num);
-                // Remove lock by shifting
+            if (strcmp(g_file_locks[i].username, disconnected_username) == 0) {
+                log_message("INFO: User '%s' disconnected, auto-releasing lock on %s (sent %d).", disconnected_username, g_file_locks[i].filename, g_file_locks[i].sentence_num);
                 for (int j = i; j < g_num_locks - 1; j++) {
                     g_file_locks[j] = g_file_locks[j + 1];
                 }
                 g_num_locks--;
             }
         }
-        // --- **** END OF FIX **** ---
         
         for (int i = client_index; i < g_num_clients - 1; i++) {
             client_list[i] = client_list[i + 1];
@@ -1270,9 +1376,8 @@ void* handle_connection(void* arg) {
     }
     pthread_mutex_unlock(&g_system_mutex);
 
-    // 5. Clean up
     close(client_socket);
-    printf("Connection closed.\n");
+    log_message("INFO: Connection from %s (User: %s) closed.", peer_ip, disconnected_username);
     return NULL;
 }
 
@@ -1280,20 +1385,21 @@ void* handle_connection(void* arg) {
  * --- Main Server Function ---
  */
 int main() {
-    // (Unchanged)
+    load_registry_from_disk(); // Load persistent data
+    
     int server_fd;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
-        perror("socket failed");
+        log_message("CRITICAL: socket failed: %m");
         exit(EXIT_FAILURE);
     }
 
     int opt = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
-        perror("setsockopt");
+        log_message("CRITICAL: setsockopt failed: %m");
         exit(EXIT_FAILURE);
     }
 
@@ -1302,33 +1408,34 @@ int main() {
     server_addr.sin_port = htons(NAME_SERVER_PORT);
 
     if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("bind failed");
+        log_message("CRITICAL: bind failed: %m");
         exit(EXIT_FAILURE);
     }
 
     if (listen(server_fd, 10) < 0) { 
-        perror("listen failed");
+        log_message("CRITICAL: listen failed: %m");
         exit(EXIT_FAILURE);
     }
 
-    printf("Name Server listening on port %d\n", NAME_SERVER_PORT);
+    log_message("INFO: Name Server listening on port %d", NAME_SERVER_PORT);
 
     while (1) {
         int client_socket = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
         if (client_socket < 0) {
-            perror("accept failed");
+            log_message("ERROR: accept failed: %m");
             continue; 
         }
 
-        printf("Accepted new connection from %s:%d\n",
-               inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+        char client_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
+        log_message("INFO: Accepted new connection from %s:%d", client_ip, ntohs(client_addr.sin_port));
 
         pthread_t thread_id;
         int* p_client_socket = malloc(sizeof(int));
         *p_client_socket = client_socket;
 
         if (pthread_create(&thread_id, NULL, handle_connection, (void*)p_client_socket) != 0) {
-            perror("pthread_create failed");
+            log_message("ERROR: pthread_create failed: %m");
             free(p_client_socket);
             close(client_socket);
         }

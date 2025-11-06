@@ -10,12 +10,18 @@
 #include <time.h>      // For strftime()
 
 #include "common.h" 
+#include <stdarg.h>
 
 
 // --- Define This Storage Server's Details ---
 #define SS_NM_PORT 9001       // Port for NM to connect to
 #define SS_CLIENT_PORT 9002   // Port for Clients to connect to
 #define SS_STORAGE_DIR "ss_storage/" // All files are in here
+
+// --- **** ADD THESE **** ---
+#define SS_LOG_FILE "storageserver.log"
+pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+// --- **** END OF ADDITION **** ---
 
 const char* my_files[] = {
     "wowee.txt",
@@ -294,6 +300,31 @@ int get_file_metadata(const char* file_path, int* word_count, int* char_count,
     return 0;
 }
 
+/*
+ * Writes a formatted message to the log file in a thread-safe way.
+ */
+void log_message(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+
+    time_t now = time(NULL);
+    char time_buf[64];
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+    pthread_mutex_lock(&g_log_mutex);
+    
+    FILE* log_file = fopen(SS_LOG_FILE, "a");
+    if (log_file) {
+        fprintf(log_file, "[%s] ", time_buf);
+        vfprintf(log_file, format, args);
+        fprintf(log_file, "\n");
+        fclose(log_file);
+    }
+    
+    pthread_mutex_unlock(&g_log_mutex);
+    va_end(args);
+}
+
 
 /*
  * Thread function to handle a direct connection from a Client
@@ -307,7 +338,7 @@ void* handle_client_request(void* arg) {
 
     bytes_read = read(client_socket, buffer, sizeof(buffer) - 1);
     if (bytes_read <= 0) {
-        printf("SS (Client-Handler): Client disconnected before request.\n");
+        log_message("Client disconnected before sending request.");
         close(client_socket);
         return NULL;
     }
@@ -315,39 +346,40 @@ void* handle_client_request(void* arg) {
 
     char filename[256];
     int sentence_num, word_index;
+    char err_msg[256]; // For sending error messages
     
     if (sscanf(buffer, "READ_FILE %s", filename) == 1) {
-        // (This logic is unchanged)
-        printf("SS (Client-Handler): Client requested to read '%s'\n", filename);
+        log_message("Client requested READ_FILE for '%s'", filename);
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
+        
         FILE* file = fopen(file_path, "r");
         if (file == NULL) {
-            perror("SS (Client-Handler): fopen failed");
-            const char* err_msg = "ERROR: File not found or permission denied.\n";
+            log_message("Failed READ_FILE for '%s': File not found.", filename);
+            snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
             write(client_socket, err_msg, strlen(err_msg));
         } else {
             char file_buffer[BUFFER_SIZE];
             size_t bytes_read_from_file;
             while ((bytes_read_from_file = fread(file_buffer, 1, sizeof(file_buffer), file)) > 0) {
                 if (write(client_socket, file_buffer, bytes_read_from_file) < 0) {
-                    perror("SS (Client-Handler): write to client failed");
+                    log_message("Write to client failed during READ_FILE for '%s'.", filename);
                     break; 
                 }
             }
             fclose(file);
-            printf("SS (Client-Handler): File '%s' sent successfully.\n", filename);
+            log_message("Successfully sent file '%s'.", filename);
         }
 
     } else if (sscanf(buffer, "STREAM_FILE %s", filename) == 1) {
-        // (This logic is unchanged)
-        printf("SS (Client-Handler): Client requested to stream '%s'\n", filename);
+        log_message("Client requested STREAM_FILE for '%s'", filename);
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
+        
         FILE* file = fopen(file_path, "r");
         if (file == NULL) {
-            perror("SS (Client-Handler): fopen failed");
-            const char* err_msg = "ERROR: File not found or permission denied.\n";
+            log_message("Failed STREAM_FILE for '%s': File not found.", filename);
+            snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
             write(client_socket, err_msg, strlen(err_msg));
         } else {
             char word_buffer[256]; 
@@ -358,66 +390,63 @@ void* handle_client_request(void* arg) {
             }
             write(client_socket, "\n", 1);
             fclose(file);
-            printf("SS (Client-Handler): File '%s' streamed successfully.\n", filename);
+            log_message("Successfully streamed file '%s'.", filename);
         }
 
     } else if (sscanf(buffer, "WRITE_START %s %d", filename, &sentence_num) == 2) {
-        // --- **** UPDATED WRITE LOGIC **** ---
-        printf("SS (Client-Handler): Client started WRITE for '%s' (sent %d)\n", filename, sentence_num);
+        log_message("Client started WRITE_START for '%s', sentence %d", filename, sentence_num);
         
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
 
         FILE* file_ro = fopen(file_path, "r");
         if (file_ro == NULL) {
-            perror("SS (Write): Failed to open file for parsing");
-            write(client_socket, "ERROR: File not found\n", 22);
+            log_message("Failed WRITE_START for '%s': File not found.", filename);
+            snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
+            write(client_socket, err_msg, strlen(err_msg));
             close(client_socket);
             return NULL;
         }
         WordNode* doc_head = parse_file_to_list(file_ro);
         fclose(file_ro);
 
-        // --- **** NEW: Initial Index Check **** ---
         WordNode* target_sentence = get_sentence(doc_head, sentence_num);
         if (target_sentence == NULL && !(doc_head == NULL && sentence_num == 0)) { 
             WordNode* prev_sentence = get_sentence(doc_head, sentence_num - 1);
             if (prev_sentence == NULL) {
-                printf("SS (Write): ERROR: Sentence index %d out of range.\n", sentence_num);
-                write(client_socket, "ERROR: Sentence index out of range.\n", 36);
+                log_message("Failed WRITE_START for '%s': Sentence index %d out of range.", filename, sentence_num);
+                snprintf(err_msg, sizeof(err_msg), "ERROR %d: Sentence index out of range.\n", ERROR_INVALID_INDEX);
+                write(client_socket, err_msg, strlen(err_msg));
                 free_document(doc_head);
                 close(client_socket);
                 return NULL;
             }
         }
-        // --- **** END OF INDEX CHECK **** ---
 
-        // Send initial ACK to client to begin session
         write(client_socket, "ACK_WRITE_START\n", 16);
+        log_message("WRITE_START for '%s' acknowledged. Entering session.", filename);
 
         while ((bytes_read = read(client_socket, buffer, sizeof(buffer) - 1)) > 0) {
             buffer[bytes_read] = '\0';
             buffer[strcspn(buffer, "\n")] = 0; // Remove newline
 
             if (strncmp(buffer, "ETIRW", 5) == 0) {
-                printf("SS (Write): Received ETIRW. Finalizing changes.\n");
+                log_message("Received ETIRW for '%s'. Finalizing changes.", filename);
                 
-                // --- **** NEW: UNDO Backup Logic **** ---
                 char bak_file_path[512];
-                // --- **** FIX: Build .bak path from components **** ---
                 snprintf(bak_file_path, sizeof(bak_file_path), "%s%s.bak", SS_STORAGE_DIR, filename);
                 
-                // Atomically rename current file to backup file
                 if (rename(file_path, bak_file_path) != 0) {
-                    perror("SS (Write): Failed to create backup file");
-                    printf("SS (Write): Warning: UNDO may not be available for this change.\n");
+                    log_message("Warning: Failed to create .bak for '%s'. UNDO will not be available.", filename);
+                    perror("SS (Write): rename failed");
                 }
-                // --- **** END OF FIX **** ---
                 
                 FILE* file_w = fopen(file_path, "w");
                 if (file_w == NULL) {
-                    perror("SS (Write): Failed to open file for writing");
-                    write(client_socket, "ERROR: Failed to save changes\n", 30);
+                    log_message("CRITICAL: Failed to open '%s' for final write. Changes lost.", filename);
+                    perror("SS (Write): fopen failed");
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Failed to save changes.\n", ERROR_SERVER_ERROR);
+                    write(client_socket, err_msg, strlen(err_msg));
                     break;
                 }
                 
@@ -425,54 +454,47 @@ void* handle_client_request(void* arg) {
                 fclose(file_w);
                 
                 write(client_socket, "ACK_WRITE_SUCCESS\n", sizeof("ACK_WRITE_SUCCESS\n") - 1);
+                log_message("Successfully saved changes to '%s'.", filename);
                 break; 
             }
             
             char* first_space = strchr(buffer, ' ');
             if (first_space == NULL) {
-                printf("SS (Write): Invalid format. Got: %s\n", buffer);
-                write(client_socket, "ERROR: Invalid format. Use: <index> <content>\n", 46);
+                log_message("WRITE for '%s': Invalid format from client: %s", filename, buffer);
+                snprintf(err_msg, sizeof(err_msg), "ERROR %d: Invalid format. Use: <index> <content>\n", ERROR_INVALID_INDEX);
+                write(client_socket, err_msg, strlen(err_msg));
                 continue; 
             }
 
             *first_space = '\0';
             char* content = first_space + 1;
-            
             word_index = atoi(buffer); 
 
             if (word_index < 0) {
-                printf("SS (Write): Invalid index %d.\n", word_index);
-                write(client_socket, "ERROR: Index cannot be negative.\n", 33);
+                log_message("WRITE for '%s': Invalid negative index: %d", filename, word_index);
+                snprintf(err_msg, sizeof(err_msg), "ERROR %d: Index cannot be negative.\n", ERROR_INVALID_INDEX);
+                write(client_socket, err_msg, strlen(err_msg));
                 continue; 
             }
             
-            printf("SS (Write): Updating sent %d, word %d with '%s'\n", sentence_num, word_index, content);
-            
-            // --- **** NEW: Check return value from insert_word_at **** ---
             WordNode* new_head = insert_word_at(doc_head, sentence_num, word_index, content);
             
             if (new_head == NULL) {
-                // Failure! insert_word_at already printed the error to SS console
-                const char* err_msg = "ERROR: Invalid word index.\n";
-                if (write(client_socket, err_msg, strlen(err_msg)) < 0) {
-                    break; // Client disconnected
-                }
-                // Do NOT update doc_head
+                log_message("WRITE for '%s': Invalid index (sent %d, word %d).", filename, sentence_num, word_index);
+                snprintf(err_msg, sizeof(err_msg), "ERROR %d: Invalid word or sentence index.\n", ERROR_INVALID_INDEX);
+                write(client_socket, err_msg, strlen(err_msg));
             } else {
-                doc_head = new_head; // Success, update the head
-                const char* ack_msg = "ACK_UPDATE_OK\n";
-                if (write(client_socket, ack_msg, strlen(ack_msg)) < 0) {
-                     break; // Client disconnected
-                }
+                doc_head = new_head; // Success
+                log_message("WRITE for '%s': Updated sent %d, word %d.", filename, sentence_num, word_index);
+                write(client_socket, "ACK_UPDATE_OK\n", 14);
             }
-            // --- **** END OF CHECK **** ---
         }
         
         free_document(doc_head);
-        printf("SS (Write): Session for '%s' ended.\n", filename);
+        log_message("Write session for '%s' ended.", filename);
 
     } else {
-        printf("SS (Client-Handler): Unknown command '%s'\n", buffer);
+        log_message("Unknown command from client: %s", buffer);
     }
     close(client_socket);
     return NULL;
@@ -534,6 +556,9 @@ void* start_client_server(void* arg) {
 /*
  * Thread function to handle a connection from the Name Server
  */
+/*
+ * Thread function to handle a connection from the Name Server
+ */
 void* handle_nm_command(void* arg) {
     int nm_socket = *((int*)arg);
     free(arg);
@@ -541,43 +566,44 @@ void* handle_nm_command(void* arg) {
     ssize_t bytes_read;
     bytes_read = read(nm_socket, buffer, sizeof(buffer) - 1);
     if (bytes_read <= 0) {
-        printf("SS (NM-Handler): NM disconnected before request.\n");
+        log_message("NM disconnected before sending request.");
         close(nm_socket);
         return NULL;
     }
     buffer[bytes_read] = '\0';
     char command[64], filename[256];
     if (sscanf(buffer, "%s %s", command, filename) != 2) {
-        printf("SS (NM-Handler): Invalid command format from NM.\n");
+        log_message("Invalid command format from NM: %s", buffer);
         close(nm_socket);
         return NULL;
     }
+
     if (strcmp(command, "CREATE_FILE") == 0) {
-        printf("SS (NM-Handler): NM requested to create '%s'\n", filename);
+        log_message("NM requested CREATE_FILE for '%s'", filename);
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
         FILE* file = fopen(file_path, "w");
         if (file == NULL) {
-            perror("SS (NM-Handler): fopen failed");
+            log_message("Failed CREATE_FILE for '%s': fopen failed.", filename);
             write(nm_socket, "ACK_CREATE_FAIL\n", sizeof("ACK_CREATE_FAIL\n") - 1);
         } else {
             fclose(file);
-            printf("SS (NM-Handler): File '%s' created successfully.\n", filename);
+            log_message("Successfully created file '%s'.", filename);
             write(nm_socket, "ACK_CREATE_SUCCESS\n", sizeof("ACK_CREATE_SUCCESS\n") - 1);
         }
     } else if (strcmp(command, "DELETE_FILE") == 0) {
-        printf("SS (NM-Handler): NM requested to delete '%s'\n", filename);
+        log_message("NM requested DELETE_FILE for '%s'", filename);
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
         if (remove(file_path) == 0) {
-            printf("SS (NM-Handler): File '%s' deleted successfully.\n", filename);
+            log_message("Successfully deleted file '%s'.", filename);
             write(nm_socket, "ACK_DELETE_SUCCESS\n", sizeof("ACK_DELETE_SUCCESS\n") - 1);
         } else {
-            perror("SS (NM-Handler): remove failed");
+            log_message("Failed DELETE_FILE for '%s': remove failed.", filename);
             write(nm_socket, "ACK_DELETE_FAIL\n", sizeof("ACK_DELETE_FAIL\n") - 1);
         }
     } else if (strcmp(command, "GET_METADATA") == 0) {
-        printf("SS (NM-Handler): NM requested metadata for '%s'\n", filename);
+        log_message("NM requested GET_METADATA for '%s'", filename);
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
         int words = 0, chars = 0;
@@ -587,44 +613,38 @@ void* handle_nm_command(void* arg) {
             snprintf(response_buf, sizeof(response_buf), 
                 "METADATA_RESPONSE %d %d %s %s\n", 
                 words, chars, created_ts, modified_ts);
-            printf("  Sending metadata: %s", response_buf);
+            log_message("Sending metadata for '%s'", filename);
         } else {
-            perror("SS (NM-Handler): get_file_metadata failed");
+            log_message("Failed GET_METADATA for '%s': get_file_metadata failed.", filename);
             snprintf(response_buf, sizeof(response_buf), "METADATA_FAIL\n");
         }
         write(nm_socket, response_buf, strlen(response_buf));
 
-    // --- **** NEW: UNDO_FILE Logic **** ---
     } else if (strcmp(command, "UNDO_FILE") == 0) {
-        printf("SS (NM-Handler): NM requested to undo '%s'\n", filename);
+        log_message("NM requested UNDO_FILE for '%s'", filename);
         char file_path[512];
         char bak_file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
         snprintf(bak_file_path, sizeof(bak_file_path), "%s%s.bak", SS_STORAGE_DIR, filename);
 
-        // Check if backup file exists
         struct stat st;
         if (stat(bak_file_path, &st) != 0) {
-            // Backup file does not exist
-            printf("  No backup file found at %s\n", bak_file_path);
+            log_message("Failed UNDO_FILE for '%s': No .bak file found.", filename);
             write(nm_socket, "ACK_UNDO_FAIL_NO_BAK\n", 21);
         } else {
-            // Backup exists. Delete current file, rename .bak to current.
             if (remove(file_path) != 0) {
-                perror("SS (NM-Handler): Failed to remove current file for undo");
+                log_message("Failed UNDO_FILE for '%s': Could not remove current file.", filename);
                 write(nm_socket, "ACK_UNDO_FAIL\n", 14);
             } else if (rename(bak_file_path, file_path) != 0) {
-                perror("SS (NM-Handler): Failed to restore backup file");
+                log_message("Failed UNDO_FILE for '%s': Could not restore .bak file.", filename);
                 write(nm_socket, "ACK_UNDO_FAIL\n", 14);
             } else {
-                printf("  Undo successful.\n");
+                log_message("Successfully reverted '%s' from backup.", filename);
                 write(nm_socket, "ACK_UNDO_SUCCESS\n", 17);
             }
         }
-    // --- **** END OF NEW BLOCK **** ---
-    
     } else {
-        printf("SS (NM-Handler): Unknown command from NM '%s'\n", command);
+        log_message("Unknown command from NM: %s", command);
         write(nm_socket, "ACK_UNKNOWN\n", sizeof("ACK_UNKNOWN\n") - 1);
     }
     close(nm_socket);

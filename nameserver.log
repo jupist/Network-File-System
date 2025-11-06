@@ -1,0 +1,8 @@
+[2025-11-06 14:03:55] INFO: (Persistence) Successfully loaded 3 files from registry.
+[2025-11-06 14:03:55] INFO: Name Server listening on port 8080
+[2025-11-06 14:04:18] INFO: Accepted new connection from 127.0.0.1:54390
+[2025-11-06 14:04:18] INFO: New connection from a Storage Server (127.0.0.1).
+[2025-11-06 14:04:18] INFO: Registered SS at 127.0.0.1 (NM Port 9001, Client Port 9002)
+[2025-11-06 14:04:18] INFO: SS at 127.0.0.1 registered new non-persistent file: wowee.txt
+[2025-11-06 14:04:18] INFO: SS at 127.0.0.1 registered new non-persistent file: nuh_uh.txt
+[2025-11-06 14:04:18] INFO: Storage Server registration complete. Connection closed.
