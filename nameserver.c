@@ -273,6 +273,53 @@ void get_current_timestamp(char* buffer, int len) {
     strftime(buffer, len, "%Y-%m-%d %H:%M", tm_info);
 }
 
+int forward_undo_to_ss(const char* ss_ip, int ss_nm_port, const char* filename) {
+    int ss_sock;
+    struct sockaddr_in ss_addr;
+    char command[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+
+    if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("NM (SS-Client-Undo): socket failed");
+        return -1;
+    }
+    ss_addr.sin_family = AF_INET;
+    ss_addr.sin_port = htons(ss_nm_port);
+    if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) {
+        perror("NM (SS-Client-Undo): invalid address");
+        close(ss_sock);
+        return -1;
+    }
+    if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) {
+        perror("NM (SS-Client-Undo): connect to SS failed");
+        close(ss_sock);
+        return -1;
+    }
+    
+    snprintf(command, sizeof(command), "UNDO_FILE %s\n", filename);
+    if (write(ss_sock, command, strlen(command)) < 0) {
+        perror("NM (SS-Client-Undo): write to SS failed");
+        close(ss_sock);
+        return -1;
+    }
+    
+    ssize_t bytes_read = read(ss_sock, response, sizeof(response) - 1);
+    close(ss_sock); 
+    
+    if (bytes_read <= 0) {
+        printf("NM (SS-Client-Undo): No response from SS.\n");
+        return -1;
+    }
+    response[bytes_read] = '\0';
+    
+    if (strncmp(response, "ACK_UNDO_SUCCESS", 16) == 0) {
+        return 0; // Success
+    } else if (strncmp(response, "ACK_UNDO_FAIL_NO_BAK", 20) == 0) {
+        return -2; // No backup file
+    } else {
+        return -1; // Other failure
+    }
+}
 
 // ---------------------------------------
 
@@ -1006,9 +1053,75 @@ void* handle_connection(void* arg) {
                 write(client_socket, output_buffer, output_size);
                 free(output_buffer);
 
-            // --- **** NEW: WRITE and RELEASE_LOCK **** ---
+            // --- **** NEW: UNDO Logic **** ---
+            } else if (strncmp(buffer, "UNDO", 4) == 0) {
+                char filename[256];
+                if (sscanf(buffer, "UNDO %s", filename) != 1) {
+                    const char* err_msg = "ERROR: Invalid UNDO format. Use: UNDO <filename>\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                printf("Client requested UNDO for '%s'\n", filename);
+
+                int found_index = -1;
+                char ss_ip[INET_ADDRSTRLEN];
+                int ss_nm_port = -1;
+                int permitted = 0; 
+
+                pthread_mutex_lock(&g_system_mutex);
+                for (int i = 0; i < g_num_files; i++) {
+                    if (strcmp(file_directory[i].filename, filename) == 0) {
+                        found_index = i;
+                        // Per spec, "user B can also do it", but this is a
+                        // file modification. We'll require Write permission.
+                        if (check_permission(&file_directory[i], username, 'W')) {
+                            permitted = 1;
+                            // Find the SS
+                            for (int j = 0; j < g_num_servers; j++) {
+                                if (strcmp(server_list[j].ss_ip_addr, file_directory[i].ss_ip_addr) == 0 &&
+                                    server_list[j].ss_client_port == file_directory[i].ss_client_port) 
+                                {
+                                    strncpy(ss_ip, server_list[j].ss_ip_addr, INET_ADDRSTRLEN);
+                                    ss_nm_port = server_list[j].ss_nm_port;
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                pthread_mutex_unlock(&g_system_mutex);
+
+                if (found_index == -1) {
+                    const char* err_msg = "ERROR: File not found.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                if (!permitted) {
+                    const char* err_msg = "ERROR: Access Denied (Write permission required to undo).\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                if (ss_nm_port == -1) {
+                    const char* err_msg = "ERROR: Could not find SS for file. Directory out of sync.\n";
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+
+                // Forward the command to the SS
+                int result = forward_undo_to_ss(ss_ip, ss_nm_port, filename);
+
+                if (result == 0) {
+                    write(client_socket, "Undo Successful!\n", 17);
+                } else if (result == -2) { // Special code for "No backup"
+                    write(client_socket, "ERROR: No undo history found for this file.\n", 44);
+                } else {
+                    write(client_socket, "ERROR: Storage Server failed to undo file.\n", 43);
+                }
+            // --- **** END OF NEW BLOCK **** ---
             
             } else if (strncmp(buffer, "WRITE", 5) == 0) {
+                // (This section is unchanged)
                 char filename[256];
                 int sentence_num;
                 if (sscanf(buffer, "WRITE %s %d", filename, &sentence_num) != 2) {
@@ -1080,6 +1193,7 @@ void* handle_connection(void* arg) {
                 write(client_socket, response_buffer, strlen(response_buffer));
             
             } else if (strncmp(buffer, "RELEASE_LOCK", 12) == 0) {
+                // (This section is unchanged)
                 char filename[256];
                 int sentence_num;
                 if (sscanf(buffer, "RELEASE_LOCK %s %d", filename, &sentence_num) != 2) {
@@ -1114,8 +1228,6 @@ void* handle_connection(void* arg) {
                     write(client_socket, "ERROR: You do not hold that lock.\n", 34);
                 }
                 pthread_mutex_unlock(&g_system_mutex);
-
-            // --- **** END OF NEW BLOCKS **** ---
 
             } else {
                 const char* ack = "ERROR: Unknown command.\n";
@@ -1163,7 +1275,6 @@ void* handle_connection(void* arg) {
     printf("Connection closed.\n");
     return NULL;
 }
-
 
 /*
  * --- Main Server Function ---

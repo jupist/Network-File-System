@@ -174,7 +174,7 @@ WordNode* get_sentence(WordNode* doc_head, int sentence_index) {
 
 /*
  * Inserts a new word at the given index in a sentence.
- * Returns the new head of the entire document, as it might change.
+ * Returns the new head of the document on success, or NULL on failure.
  */
 WordNode* insert_word_at(WordNode* doc_head, int sentence_index, int word_index, const char* content) {
     
@@ -197,14 +197,14 @@ WordNode* insert_word_at(WordNode* doc_head, int sentence_index, int word_index,
              prev_sentence->next_sentence = new_word_node;
              return doc_head;
         } else {
-             printf("SS (Write): Invalid sentence index %d (non-contiguous)\n", sentence_index);
-             return doc_head;
+             printf("SS (Write): ERROR: Invalid sentence index %d (non-contiguous)\n", sentence_index);
+             return NULL; // <--- FIX: Return NULL on error
         }
     }
     
     if (sentence_head == NULL) {
-        printf("SS (Write): Invalid sentence index %d\n", sentence_index);
-        return doc_head; // No change
+        printf("SS (Write): ERROR: Invalid sentence index %d\n", sentence_index);
+        return NULL; // <--- FIX: Return NULL on error
     }
     
     WordNode* new_word_node = create_word_node(content);
@@ -226,17 +226,29 @@ WordNode* insert_word_at(WordNode* doc_head, int sentence_index, int word_index,
 
     // Insert at index > 0
     WordNode* current_word = sentence_head;
-    for (int i = 0; i < word_index - 1 && current_word->next_word != NULL; i++) {
+    
+    // --- **** FIX: Corrected loop for index checking **** ---
+    int i = 0;
+    // Loop to the (word_index - 1)th node
+    for (i = 0; i < word_index - 1; i++) {
+        if (current_word->next_word == NULL) {
+            // We hit the end of the sentence early
+            break;
+        }
         current_word = current_word->next_word;
     }
 
-    if (current_word == NULL) {
-        printf("SS (Write): Invalid word index %d\n", word_index);
+    // Check *why* we stopped
+    if (i != word_index - 1) {
+        // We broke early, meaning the index is out of bounds
+        printf("SS (Write): ERROR: Invalid word index %d (too large for sentence).\n", word_index);
         free(new_word_node->word);
         free(new_word_node);
-        return doc_head; // No change
+        return NULL; // <--- FIX: Return NULL on error
     }
+    // --- **** END OF FIX **** ---
     
+    // If we're here, current_word is the (index - 1)th node. Insert after it.
     new_word_node->next_word = current_word->next_word;
     current_word->next_word = new_word_node;
     
@@ -350,7 +362,7 @@ void* handle_client_request(void* arg) {
         }
 
     } else if (sscanf(buffer, "WRITE_START %s %d", filename, &sentence_num) == 2) {
-        // (This logic is unchanged)
+        // --- **** UPDATED WRITE LOGIC **** ---
         printf("SS (Client-Handler): Client started WRITE for '%s' (sent %d)\n", filename, sentence_num);
         
         char file_path[512];
@@ -366,12 +378,41 @@ void* handle_client_request(void* arg) {
         WordNode* doc_head = parse_file_to_list(file_ro);
         fclose(file_ro);
 
+        // --- **** NEW: Initial Index Check **** ---
+        WordNode* target_sentence = get_sentence(doc_head, sentence_num);
+        if (target_sentence == NULL && !(doc_head == NULL && sentence_num == 0)) { 
+            WordNode* prev_sentence = get_sentence(doc_head, sentence_num - 1);
+            if (prev_sentence == NULL) {
+                printf("SS (Write): ERROR: Sentence index %d out of range.\n", sentence_num);
+                write(client_socket, "ERROR: Sentence index out of range.\n", 36);
+                free_document(doc_head);
+                close(client_socket);
+                return NULL;
+            }
+        }
+        // --- **** END OF INDEX CHECK **** ---
+
+        // Send initial ACK to client to begin session
+        write(client_socket, "ACK_WRITE_START\n", 16);
+
         while ((bytes_read = read(client_socket, buffer, sizeof(buffer) - 1)) > 0) {
             buffer[bytes_read] = '\0';
             buffer[strcspn(buffer, "\n")] = 0; // Remove newline
 
             if (strncmp(buffer, "ETIRW", 5) == 0) {
                 printf("SS (Write): Received ETIRW. Finalizing changes.\n");
+                
+                // --- **** NEW: UNDO Backup Logic **** ---
+                char bak_file_path[512];
+                // --- **** FIX: Build .bak path from components **** ---
+                snprintf(bak_file_path, sizeof(bak_file_path), "%s%s.bak", SS_STORAGE_DIR, filename);
+                
+                // Atomically rename current file to backup file
+                if (rename(file_path, bak_file_path) != 0) {
+                    perror("SS (Write): Failed to create backup file");
+                    printf("SS (Write): Warning: UNDO may not be available for this change.\n");
+                }
+                // --- **** END OF FIX **** ---
                 
                 FILE* file_w = fopen(file_path, "w");
                 if (file_w == NULL) {
@@ -389,7 +430,8 @@ void* handle_client_request(void* arg) {
             
             char* first_space = strchr(buffer, ' ');
             if (first_space == NULL) {
-                printf("SS (Write): Invalid format. No space. Got: %s\n", buffer);
+                printf("SS (Write): Invalid format. Got: %s\n", buffer);
+                write(client_socket, "ERROR: Invalid format. Use: <index> <content>\n", 46);
                 continue; 
             }
 
@@ -399,12 +441,31 @@ void* handle_client_request(void* arg) {
             word_index = atoi(buffer); 
 
             if (word_index < 0) {
-                printf("SS (Write): Invalid index. Got: %d\n", word_index);
+                printf("SS (Write): Invalid index %d.\n", word_index);
+                write(client_socket, "ERROR: Index cannot be negative.\n", 33);
                 continue; 
             }
             
             printf("SS (Write): Updating sent %d, word %d with '%s'\n", sentence_num, word_index, content);
-            doc_head = insert_word_at(doc_head, sentence_num, word_index, content);
+            
+            // --- **** NEW: Check return value from insert_word_at **** ---
+            WordNode* new_head = insert_word_at(doc_head, sentence_num, word_index, content);
+            
+            if (new_head == NULL) {
+                // Failure! insert_word_at already printed the error to SS console
+                const char* err_msg = "ERROR: Invalid word index.\n";
+                if (write(client_socket, err_msg, strlen(err_msg)) < 0) {
+                    break; // Client disconnected
+                }
+                // Do NOT update doc_head
+            } else {
+                doc_head = new_head; // Success, update the head
+                const char* ack_msg = "ACK_UPDATE_OK\n";
+                if (write(client_socket, ack_msg, strlen(ack_msg)) < 0) {
+                     break; // Client disconnected
+                }
+            }
+            // --- **** END OF CHECK **** ---
         }
         
         free_document(doc_head);
@@ -474,7 +535,6 @@ void* start_client_server(void* arg) {
  * Thread function to handle a connection from the Name Server
  */
 void* handle_nm_command(void* arg) {
-    // (This function IS present)
     int nm_socket = *((int*)arg);
     free(arg);
     char buffer[BUFFER_SIZE];
@@ -533,6 +593,36 @@ void* handle_nm_command(void* arg) {
             snprintf(response_buf, sizeof(response_buf), "METADATA_FAIL\n");
         }
         write(nm_socket, response_buf, strlen(response_buf));
+
+    // --- **** NEW: UNDO_FILE Logic **** ---
+    } else if (strcmp(command, "UNDO_FILE") == 0) {
+        printf("SS (NM-Handler): NM requested to undo '%s'\n", filename);
+        char file_path[512];
+        char bak_file_path[512];
+        snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
+        snprintf(bak_file_path, sizeof(bak_file_path), "%s%s.bak", SS_STORAGE_DIR, filename);
+
+        // Check if backup file exists
+        struct stat st;
+        if (stat(bak_file_path, &st) != 0) {
+            // Backup file does not exist
+            printf("  No backup file found at %s\n", bak_file_path);
+            write(nm_socket, "ACK_UNDO_FAIL_NO_BAK\n", 21);
+        } else {
+            // Backup exists. Delete current file, rename .bak to current.
+            if (remove(file_path) != 0) {
+                perror("SS (NM-Handler): Failed to remove current file for undo");
+                write(nm_socket, "ACK_UNDO_FAIL\n", 14);
+            } else if (rename(bak_file_path, file_path) != 0) {
+                perror("SS (NM-Handler): Failed to restore backup file");
+                write(nm_socket, "ACK_UNDO_FAIL\n", 14);
+            } else {
+                printf("  Undo successful.\n");
+                write(nm_socket, "ACK_UNDO_SUCCESS\n", 17);
+            }
+        }
+    // --- **** END OF NEW BLOCK **** ---
+    
     } else {
         printf("SS (NM-Handler): Unknown command from NM '%s'\n", command);
         write(nm_socket, "ACK_UNKNOWN\n", sizeof("ACK_UNKNOWN\n") - 1);

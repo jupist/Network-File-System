@@ -113,7 +113,6 @@ void stream_file_from_ss(const char* ss_ip, int ss_port, const char* filename) {
     close(ss_sock);
 }
 
-// --- **** NEW: WRITE SESSION FUNCTION **** ---
 /*
  * Connects to SS and enters the interactive write session.
  */
@@ -150,31 +149,52 @@ void write_session_to_ss(int nm_socket, const char* ss_ip, int ss_port, const ch
         close(ss_sock);
         return;
     }
-    
-    // 3. Enter interactive write loop
-    printf("Write session started. Enter '<word_index> <content>' or 'ETIRW' to finish.\n");
-    while (1) {
-        printf("Write > ");
-        if (fgets(command_buffer, sizeof(command_buffer), stdin) == NULL) {
-            printf("Error reading input. Aborting write.\n");
-            // Send ETIRW to safely close SS-side
-            write(ss_sock, "ETIRW\n", 6);
-            break; // Exit loop on EOF
-        }
 
-        if (write(ss_sock, command_buffer, strlen(command_buffer)) < 0) {
-            perror("Failed to send command to SS. Aborting");
-            break;
-        }
+    // --- **** FIX: Read the initial ACK/ERROR from SS **** ---
+    ssize_t bytes_read = read(ss_sock, response_buffer, sizeof(response_buffer) - 1);
+    if (bytes_read <= 0) {
+        printf("Storage Server disconnected or failed to send initial ACK.\n");
+        close(ss_sock);
+        // We still hold the lock. We must tell the NM to release it.
+        // The original code did this *after* the loop, so we'll do it there.
+        return; // Exit the function, the 'finally' block below will run.
+    }
+    response_buffer[bytes_read] = '\0';
+    printf("SS: %s", response_buffer);
 
-        if (strncmp(command_buffer, "ETIRW", 5) == 0) {
-            // Read final ACK from SS
-            ssize_t bytes_read = read(ss_sock, response_buffer, sizeof(response_buffer) - 1);
-            if (bytes_read > 0) {
-                response_buffer[bytes_read] = '\0';
-                printf("SS: %s", response_buffer);
+    // If the server sent an error on START (e.g., bad sentence index), abort.
+    if (strncmp(response_buffer, "ERROR:", 6) == 0) {
+        // We don't enter the loop. We'll just fall through to the lock release.
+    } else {
+        // 3. Enter interactive write loop
+        printf("Write session started. Enter '<word_index> <content>' or 'ETIRW' to finish.\n");
+        while (1) {
+            printf("Write > ");
+            if (fgets(command_buffer, sizeof(command_buffer), stdin) == NULL) {
+                printf("Error reading input. Sending ETIRW to finalize.\n");
+                strncpy(command_buffer, "ETIRW\n", sizeof(command_buffer));
             }
-            break; // Exit loop
+
+            // Send the command (e.g., "3 new_word" or "ETIRW")
+            if (write(ss_sock, command_buffer, strlen(command_buffer)) < 0) {
+                perror("Failed to send command to SS. Aborting");
+                break;
+            }
+
+            // --- **** FIX: Wait for a response from SS for *every* command **** ---
+            bytes_read = read(ss_sock, response_buffer, sizeof(response_buffer) - 1);
+            if (bytes_read <= 0) {
+                printf("Storage Server disconnected unexpectedly.\n");
+                break; // Exit loop, connection is dead
+            }
+            response_buffer[bytes_read] = '\0';
+            printf("SS: %s", response_buffer); // Print ACK_UPDATE_OK or ERROR: ...
+            // --- **** END OF FIX **** ---
+
+            // If we just sent ETIRW, the response was the final ACK. Exit.
+            if (strncmp(command_buffer, "ETIRW", 5) == 0) {
+                break; // Exit loop
+            }
         }
     }
     
@@ -187,7 +207,7 @@ void write_session_to_ss(int nm_socket, const char* ss_ip, int ss_port, const ch
         perror("Failed to send RELEASE_LOCK to NM");
     } else {
         // Read the final ACK from NM
-        ssize_t bytes_read = read(nm_socket, response_buffer, sizeof(response_buffer) - 1);
+        bytes_read = read(nm_socket, response_buffer, sizeof(response_buffer) - 1);
         if (bytes_read > 0) {
             response_buffer[bytes_read] = '\0';
             printf("NM: %s", response_buffer);
