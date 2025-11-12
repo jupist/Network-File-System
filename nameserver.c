@@ -27,10 +27,12 @@ StorageServer server_list[MAX_SERVERS];
 ClientInfo client_list[MAX_CLIENTS]; 
 FileLock g_file_locks[MAX_LOCKS];
 FolderNode* g_folder_list = NULL; // Linked list of folders
+AccessRequest g_access_requests[MAX_ACCESS_REQUESTS];
 int g_num_servers = 0;
 int g_num_clients = 0; 
 int g_num_locks = 0;
 int g_num_folders = 0;
+int g_num_access_requests = 0;
 
 // --- **** NEW: LRU CACHE GLOBALS **** ---
 CacheMapEntry* g_cache_map[CACHE_MAP_SIZE];
@@ -894,6 +896,48 @@ void* handle_connection(void* arg) {
                         write(client_socket, err_msg, strlen(err_msg));
                     }
                 }
+
+            } else if (strncmp(buffer, "VIEW_REQUESTS", 13) == 0) {
+                printf("Client '%s' requested to view access requests\n", username);
+                log_to_file(client_addr_str, username, "REQ: VIEW_REQUESTS");
+
+                pthread_mutex_lock(&g_system_mutex);
+                
+                char response_buffer[BUFFER_SIZE] = {0};
+                int offset = snprintf(response_buffer, BUFFER_SIZE, 
+                    "Pending Access Requests for your files:\n");
+                offset += snprintf(response_buffer + offset, BUFFER_SIZE - offset,
+                    "%-20s | %-20s | %-10s | %-20s\n", 
+                    "File", "Requester", "Permission", "Timestamp");
+                offset += snprintf(response_buffer + offset, BUFFER_SIZE - offset,
+                    "--------------------------------------------------------------------------------\n");
+                
+                int requests_found = 0;
+                for (int i = 0; i < g_num_access_requests; i++) {
+                    if (strcmp(g_access_requests[i].owner_username, username) == 0 &&
+                        g_access_requests[i].status == 0) { // Pending
+                        requests_found++;
+                        offset += snprintf(response_buffer + offset, BUFFER_SIZE - offset,
+                            "%-20s | %-20s | %-10s | %-20s\n",
+                            g_access_requests[i].filename,
+                            g_access_requests[i].requester_username,
+                            g_access_requests[i].requested_permission == 'R' ? "READ" : "WRITE",
+                            g_access_requests[i].timestamp);
+                        
+                        if (offset >= BUFFER_SIZE - 200) break;
+                    }
+                }
+                
+                if (requests_found == 0) {
+                    offset += snprintf(response_buffer + offset, BUFFER_SIZE - offset,
+                        "(No pending requests)\n");
+                }
+                
+                pthread_mutex_unlock(&g_system_mutex);
+                
+                printf("  Sending %d pending requests to client.\n", requests_found);
+                log_to_file(client_addr_str, username, "RES: VIEW_REQUESTS success (%d requests).", requests_found);
+                write(client_socket, response_buffer, strlen(response_buffer));
 
             } else if (strncmp(buffer, "VIEW", 4) == 0) {
                 printf("Client requested VIEW\n");
@@ -2095,6 +2139,271 @@ void* handle_connection(void* arg) {
                         write(client_socket, err_msg, strlen(err_msg));
                     }
                 }
+
+            } else if (strncmp(buffer, "REQUEST_ACCESS", 14) == 0) {
+                char filename[256], permission_type[10];
+                if (sscanf(buffer, "REQUEST_ACCESS %s %s", filename, permission_type) != 2) {
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid REQUEST_ACCESS format. Use: REQUEST_ACCESS <filename> <R/W>\n");
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                // Validate permission type
+                char requested_perm;
+                if (strcmp(permission_type, "R") == 0 || strcmp(permission_type, "READ") == 0) {
+                    requested_perm = 'R';
+                } else if (strcmp(permission_type, "W") == 0 || strcmp(permission_type, "WRITE") == 0) {
+                    requested_perm = 'W';
+                } else {
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid permission type. Use R (read) or W (write).\n");
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                printf("Client '%s' requested %s access to '%s'\n", username, 
+                       requested_perm == 'R' ? "READ" : "WRITE", filename);
+                log_to_file(client_addr_str, username, "REQ: REQUEST_ACCESS for '%s' with permission '%c'", filename, requested_perm);
+
+                pthread_mutex_lock(&g_system_mutex);
+                
+                FileLocation* file = cache_get_unsafe(filename);
+                if (file == NULL) {
+                    file = hash_map_find_unsafe(filename);
+                    if (file != NULL) cache_put_unsafe(filename, file);
+                }
+                
+                if (file == NULL) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    printf("  File not found.\n");
+                    log_to_file(client_addr_str, username, "RES: REQUEST_ACCESS failed: File '%s' not found.", filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                // Check if requester is the owner
+                if (strcmp(file->owner_username, username) == 0) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    printf("  User is already the owner.\n");
+                    log_to_file(client_addr_str, username, "RES: REQUEST_ACCESS denied: User is the owner of '%s'.", filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: You are the owner of this file.\n");
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                // Check if user already has permission
+                int already_has_permission = 0;
+                for (int i = 0; i < file->num_permissions; i++) {
+                    if (strcmp(file->acl[i].username, username) == 0) {
+                        if (file->acl[i].permission == 'W' || 
+                            (file->acl[i].permission == 'R' && requested_perm == 'R')) {
+                            already_has_permission = 1;
+                            break;
+                        }
+                    }
+                }
+                
+                if (already_has_permission) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    printf("  User already has sufficient permission.\n");
+                    log_to_file(client_addr_str, username, "RES: REQUEST_ACCESS denied: User already has permission for '%s'.", filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: You already have sufficient permission for this file.\n");
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                // Check if a pending request already exists
+                int request_exists = 0;
+                for (int i = 0; i < g_num_access_requests; i++) {
+                    if (strcmp(g_access_requests[i].filename, filename) == 0 &&
+                        strcmp(g_access_requests[i].requester_username, username) == 0 &&
+                        g_access_requests[i].status == 0) { // Pending
+                        request_exists = 1;
+                        break;
+                    }
+                }
+                
+                if (request_exists) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    printf("  Request already pending.\n");
+                    log_to_file(client_addr_str, username, "RES: REQUEST_ACCESS denied: Request already pending for '%s'.", filename);
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: You already have a pending request for this file.\n");
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                // Create new access request
+                if (g_num_access_requests >= MAX_ACCESS_REQUESTS) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    printf("  Maximum access requests reached.\n");
+                    log_to_file(client_addr_str, username, "RES: REQUEST_ACCESS failed: Maximum requests reached.");
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Maximum access requests reached.\n", ERROR_SERVER_ERROR);
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                AccessRequest* new_request = &g_access_requests[g_num_access_requests];
+                strncpy(new_request->filename, filename, 255);
+                new_request->filename[255] = '\0';
+                strncpy(new_request->requester_username, username, 255);
+                new_request->requester_username[255] = '\0';
+                strncpy(new_request->owner_username, file->owner_username, 255);
+                new_request->owner_username[255] = '\0';
+                new_request->requested_permission = requested_perm;
+                new_request->status = 0; // Pending
+                
+                // Add timestamp
+                time_t now = time(NULL);
+                struct tm* tm_info = localtime(&now);
+                strftime(new_request->timestamp, 127, "%Y-%m-%d %H:%M:%S", tm_info);
+                
+                g_num_access_requests++;
+                
+                pthread_mutex_unlock(&g_system_mutex);
+                
+                printf("  Access request created successfully.\n");
+                log_to_file(client_addr_str, username, "RES: REQUEST_ACCESS for '%s' with permission '%c' success.", filename, requested_perm);
+                snprintf(err_msg, sizeof(err_msg), "SUCCESS: Access request sent to owner.\n");
+                write(client_socket, err_msg, strlen(err_msg));
+
+            } else if (strncmp(buffer, "APPROVE_REQUEST", 15) == 0) {
+                char filename[256], requester[256];
+                if (sscanf(buffer, "APPROVE_REQUEST %s %s", filename, requester) != 2) {
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid APPROVE_REQUEST format. Use: APPROVE_REQUEST <filename> <requester_username>\n");
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                printf("Client '%s' approving request from '%s' for '%s'\n", username, requester, filename);
+                log_to_file(client_addr_str, username, "REQ: APPROVE_REQUEST for '%s' by '%s'", filename, requester);
+
+                pthread_mutex_lock(&g_system_mutex);
+                
+                // Find the request
+                int request_index = -1;
+                for (int i = 0; i < g_num_access_requests; i++) {
+                    if (strcmp(g_access_requests[i].filename, filename) == 0 &&
+                        strcmp(g_access_requests[i].requester_username, requester) == 0 &&
+                        strcmp(g_access_requests[i].owner_username, username) == 0 &&
+                        g_access_requests[i].status == 0) { // Pending
+                        request_index = i;
+                        break;
+                    }
+                }
+                
+                if (request_index == -1) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    printf("  Request not found.\n");
+                    log_to_file(client_addr_str, username, "RES: APPROVE_REQUEST failed: Request not found.");
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: No pending request found.\n");
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                // Get the file
+                FileLocation* file = cache_get_unsafe(filename);
+                if (file == NULL) {
+                    file = hash_map_find_unsafe(filename);
+                    if (file != NULL) cache_put_unsafe(filename, file);
+                }
+                
+                if (file == NULL) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    printf("  File not found.\n");
+                    log_to_file(client_addr_str, username, "RES: APPROVE_REQUEST failed: File not found.");
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: File not found.\n", ERROR_FILE_NOT_FOUND);
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                // Grant permission
+                char requested_perm = g_access_requests[request_index].requested_permission;
+                
+                // Check if user already has an ACL entry
+                int acl_index = -1;
+                for (int i = 0; i < file->num_permissions; i++) {
+                    if (strcmp(file->acl[i].username, requester) == 0) {
+                        acl_index = i;
+                        break;
+                    }
+                }
+                
+                if (acl_index != -1) {
+                    // Update existing permission
+                    if (requested_perm == 'W' || file->acl[acl_index].permission == 'R') {
+                        file->acl[acl_index].permission = requested_perm;
+                    }
+                } else if (file->num_permissions < MAX_PERMISSIONS) {
+                    // Add new permission
+                    strncpy(file->acl[file->num_permissions].username, requester, 255);
+                    file->acl[file->num_permissions].username[255] = '\0';
+                    file->acl[file->num_permissions].permission = requested_perm;
+                    file->num_permissions++;
+                } else {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    printf("  Maximum permissions reached for file.\n");
+                    log_to_file(client_addr_str, username, "RES: APPROVE_REQUEST failed: Max permissions reached.");
+                    snprintf(err_msg, sizeof(err_msg), "ERROR %d: Maximum permissions reached for this file.\n", ERROR_SERVER_ERROR);
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                // Mark request as approved
+                g_access_requests[request_index].status = 1;
+                
+                // Persist changes
+                save_registry_to_disk_unsafe();
+                
+                pthread_mutex_unlock(&g_system_mutex);
+                
+                printf("  Request approved successfully.\n");
+                log_to_file(client_addr_str, username, "RES: APPROVE_REQUEST for '%s' by '%s' success.", filename, requester);
+                snprintf(err_msg, sizeof(err_msg), "SUCCESS: Access granted.\n");
+                write(client_socket, err_msg, strlen(err_msg));
+
+            } else if (strncmp(buffer, "REJECT_REQUEST", 14) == 0) {
+                char filename[256], requester[256];
+                if (sscanf(buffer, "REJECT_REQUEST %s %s", filename, requester) != 2) {
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: Invalid REJECT_REQUEST format. Use: REJECT_REQUEST <filename> <requester_username>\n");
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                printf("Client '%s' rejecting request from '%s' for '%s'\n", username, requester, filename);
+                log_to_file(client_addr_str, username, "REQ: REJECT_REQUEST for '%s' by '%s'", filename, requester);
+
+                pthread_mutex_lock(&g_system_mutex);
+                
+                // Find the request
+                int request_index = -1;
+                for (int i = 0; i < g_num_access_requests; i++) {
+                    if (strcmp(g_access_requests[i].filename, filename) == 0 &&
+                        strcmp(g_access_requests[i].requester_username, requester) == 0 &&
+                        strcmp(g_access_requests[i].owner_username, username) == 0 &&
+                        g_access_requests[i].status == 0) { // Pending
+                        request_index = i;
+                        break;
+                    }
+                }
+                
+                if (request_index == -1) {
+                    pthread_mutex_unlock(&g_system_mutex);
+                    printf("  Request not found.\n");
+                    log_to_file(client_addr_str, username, "RES: REJECT_REQUEST failed: Request not found.");
+                    snprintf(err_msg, sizeof(err_msg), "ERROR: No pending request found.\n");
+                    write(client_socket, err_msg, strlen(err_msg));
+                    continue;
+                }
+                
+                // Mark request as rejected
+                g_access_requests[request_index].status = 2;
+                
+                pthread_mutex_unlock(&g_system_mutex);
+                
+                printf("  Request rejected successfully.\n");
+                log_to_file(client_addr_str, username, "RES: REJECT_REQUEST for '%s' by '%s' success.", filename, requester);
+                snprintf(err_msg, sizeof(err_msg), "SUCCESS: Request rejected.\n");
+                write(client_socket, err_msg, strlen(err_msg));
 
             } else {
                 printf("Client sent unknown command: %s\n", buffer);

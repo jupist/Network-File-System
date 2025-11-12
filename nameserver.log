@@ -382,3 +382,110 @@
 [2025-11-12 22:29:57] [Client: 127.0.0.1:39066] [User: Anu] REQ: READ for '10.txt'
 [2025-11-12 22:29:57] [Client: Internal] [User: NameServer] CACHE: HIT for '10.txt'
 [2025-11-12 22:29:57] [Client: 127.0.0.1:39066] [User: Anu] RES: READ for '10.txt' success. Sending SS_LOCATION 127.0.0.1 9002 10.txt
+[2025-11-12 22:32:57] [Client: Internal] [User: NameServer] INFO: (Persistence) Successfully loaded 12 files from registry.
+[2025-11-12 22:32:57] [Client: Internal] [User: NameServer] INFO: Name Server listening on port 8080
+[2025-11-12 22:32:59] [Client: 127.0.0.1:58070] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-12 22:32:59] [Client: 127.0.0.1:58070] [User: StorageServer] INFO: Registered SS (NM Port 9001, Client Port 9002)
+[2025-11-12 22:32:59] [Client: 127.0.0.1:58070] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-12 22:32:59] [Client: 127.0.0.1:58070] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-12 22:32:59] [Client: 127.0.0.1:58070] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-12 22:33:06] [Client: 127.0.0.1:49278] [User: Aman] REQ: REGISTER_CLIENT
+[2025-11-12 22:33:06] [Client: 127.0.0.1:49278] [User: Aman] RES: Client registration successful.
+[2025-11-12 22:33:35] [Client: 127.0.0.1:49278] [User: Aman] REQ: CREATE for 'mannu.txt'
+[2025-11-12 22:33:35] [Client: Internal] [User: NameServer] INFO: (Persistence) System state saved to disk (13 files).
+[2025-11-12 22:33:35] [Client: 127.0.0.1:49278] [User: Aman] RES: CREATE for 'mannu.txt' success.
+[2025-11-12 22:33:57] [Client: 127.0.0.1:43596] [User: Anu] REQ: REGISTER_CLIENT
+[2025-11-12 22:33:57] [Client: 127.0.0.1:43596] [User: Anu] RES: Client registration successful.
+[2025-11-12 22:34:19] [Client: 127.0.0.1:49278] [User: Aman] INFO: Client disconnected. Removing from list.
+[2025-11-12 22:34:19] [Client: 127.0.0.1:49278] [User: Aman] INFO: Connection closed.
+[2025-11-12 22:34:22] [Client: 127.0.0.1:43596] [User: Anu] INFO: Client disconnected. Removing from list.
+[2025-11-12 22:34:22] [Client: 127.0.0.1:43596] [User: Anu] INFO: Connection closed.
+[2025-11-12 22:34:33] [Client: 127.0.0.1:50638] [User: Aman] REQ: REGISTER_CLIENT
+[2025-11-12 22:34:33] [Client: 127.0.0.1:50638] [User: Aman] RES: Client registration successful.
+[2025-11-12 22:34:43] [Client: 127.0.0.1:38846] [User: Anu] REQ: REGISTER_CLIENT
+[2025-11-12 22:34:43] [Client: 127.0.0.1:38846] [User: Anu] RES: Client registration successful.
+[2025-11-12 22:35:29] [Client: 127.0.0.1:50638] [User: Aman] REQ: ADDACCESS W for 'mannu.txt' to user 'Anu'
+[2025-11-12 22:35:29] [Client: Internal] [User: NameServer] CACHE: MISS for 'mannu.txt'
+[2025-11-12 22:35:29] [Client: Internal] [User: NameServer] CACHE: ADD for 'mannu.txt'
+[2025-11-12 22:35:29] [Client: Internal] [User: NameServer] INFO: (Persistence) System state saved to disk (13 files).
+[2025-11-12 22:35:29] [Client: 127.0.0.1:50638] [User: Aman] RES: ADDACCESS for 'mannu.txt' to user 'Anu' success.
+[2025-11-12 22:35:55] [Client: 127.0.0.1:38846] [User: Anu] REQ: WRITE for 'mannu.txt', sentence 0.
+[2025-11-12 22:35:55] [Client: Internal] [User: NameServer] CACHE: HIT for 'mannu.txt'
+[2025-11-12 22:35:55] [Client: 127.0.0.1:38846] [User: Anu] INFO: Lock granted for 'mannu.txt' (sent 0).
+[2025-11-12 22:35:55] [Client: 127.0.0.1:38846] [User: Anu] RES: WRITE for 'mannu.txt' success. Sending SS_LOCATION 127.0.0.1 9002 mannu.txt
+[2025-11-12 22:36:12] [Client: 127.0.0.1:50638] [User: Aman] REQ: DELETE for 'mannu.txt'
+[2025-11-12 22:36:12] [Client: Internal] [User: NameServer] CACHE: DELETE for 'mannu.txt'
+[2025-11-12 22:36:12] [Client: Internal] [User: NameServer] INFO: (Persistence) System state saved to disk (12 files).
+[2025-11-12 22:36:12] [Client: 127.0.0.1:50638] [User: Aman] RES: DELETE for 'mannu.txt' success.
+[2025-11-12 22:36:24] [Client: 127.0.0.1:38846] [User: Anu] REQ: RELEASE_LOCK for 'mannu.txt' (sent 0).
+[2025-11-12 22:36:24] [Client: 127.0.0.1:38846] [User: Anu] RES: Lock released for 'mannu.txt' (sent 0).
+[2025-11-12 22:36:34] [Client: 127.0.0.1:38846] [User: Anu] REQ: READ for 'mannu.txt'
+[2025-11-12 22:36:34] [Client: Internal] [User: NameServer] CACHE: MISS for 'mannu.txt'
+[2025-11-12 22:36:34] [Client: 127.0.0.1:38846] [User: Anu] RES: READ for 'mannu.txt' failed: File not found.
+[2025-11-12 22:44:23] [Client: Internal] [User: NameServer] INFO: (Persistence) Successfully loaded 12 files from registry.
+[2025-11-12 22:44:23] [Client: Internal] [User: NameServer] CRITICAL: bind() failed: Address already in use
+[2025-11-12 22:44:25] [Client: 127.0.0.1:37732] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-12 22:44:25] [Client: 127.0.0.1:37732] [User: StorageServer] INFO: Registered SS (NM Port 9001, Client Port 9002)
+[2025-11-12 22:44:25] [Client: 127.0.0.1:37732] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-12 22:44:25] [Client: 127.0.0.1:37732] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-12 22:44:25] [Client: 127.0.0.1:37732] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-12 22:44:33] [Client: 127.0.0.1:50638] [User: Aman] INFO: Client disconnected. Removing from list.
+[2025-11-12 22:44:33] [Client: 127.0.0.1:50638] [User: Aman] INFO: Connection closed.
+[2025-11-12 22:44:33] [Client: 127.0.0.1:38846] [User: Anu] INFO: Client disconnected. Removing from list.
+[2025-11-12 22:44:33] [Client: 127.0.0.1:38846] [User: Anu] INFO: Connection closed.
+[2025-11-12 22:44:49] [Client: Internal] [User: NameServer] INFO: (Persistence) Successfully loaded 12 files from registry.
+[2025-11-12 22:44:49] [Client: Internal] [User: NameServer] INFO: Name Server listening on port 8080
+[2025-11-12 22:44:51] [Client: 127.0.0.1:51550] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-12 22:44:51] [Client: 127.0.0.1:51550] [User: StorageServer] INFO: Registered SS (NM Port 9001, Client Port 9002)
+[2025-11-12 22:44:51] [Client: 127.0.0.1:51550] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-12 22:44:51] [Client: 127.0.0.1:51550] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-12 22:44:51] [Client: 127.0.0.1:51550] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-12 22:44:58] [Client: 127.0.0.1:51554] [User: Anu] REQ: REGISTER_CLIENT
+[2025-11-12 22:44:58] [Client: 127.0.0.1:51554] [User: Anu] RES: Client registration successful.
+[2025-11-12 22:45:48] [Client: 127.0.0.1:51554] [User: Anu] REQ: CREATE for '11.txt'
+[2025-11-12 22:45:48] [Client: Internal] [User: NameServer] INFO: (Persistence) System state saved to disk (13 files).
+[2025-11-12 22:45:48] [Client: 127.0.0.1:51554] [User: Anu] RES: CREATE for '11.txt' success.
+[2025-11-12 22:46:28] [Client: 127.0.0.1:51554] [User: Anu] REQ: WRITE for '11.txt', sentence 0.
+[2025-11-12 22:46:28] [Client: Internal] [User: NameServer] CACHE: MISS for '11.txt'
+[2025-11-12 22:46:28] [Client: Internal] [User: NameServer] CACHE: ADD for '11.txt'
+[2025-11-12 22:46:28] [Client: 127.0.0.1:51554] [User: Anu] INFO: Lock granted for '11.txt' (sent 0).
+[2025-11-12 22:46:28] [Client: 127.0.0.1:51554] [User: Anu] RES: WRITE for '11.txt' success. Sending SS_LOCATION 127.0.0.1 9002 11.txt
+[2025-11-12 22:46:39] [Client: 127.0.0.1:51554] [User: Anu] REQ: RELEASE_LOCK for '11.txt' (sent 0).
+[2025-11-12 22:46:39] [Client: 127.0.0.1:51554] [User: Anu] RES: Lock released for '11.txt' (sent 0).
+[2025-11-12 22:47:05] [Client: 127.0.0.1:41750] [User: Mannu] REQ: REGISTER_CLIENT
+[2025-11-12 22:47:05] [Client: 127.0.0.1:41750] [User: Mannu] RES: Client registration successful.
+[2025-11-12 22:47:44] [Client: 127.0.0.1:41750] [User: Mannu] REQ: REQUEST_ACCESS for '11.txt' with permission 'W'
+[2025-11-12 22:47:44] [Client: Internal] [User: NameServer] CACHE: HIT for '11.txt'
+[2025-11-12 22:47:44] [Client: 127.0.0.1:41750] [User: Mannu] RES: REQUEST_ACCESS for '11.txt' with permission 'W' success.
+[2025-11-12 22:48:22] [Client: 127.0.0.1:51554] [User: Anu] REQ: VIEW
+[2025-11-12 22:48:22] [Client: 127.0.0.1:51554] [User: Anu] RES: VIEW success. Sent 2 files.
+[2025-11-12 22:51:29] [Client: 127.0.0.1:51554] [User: Anu] INFO: Client disconnected. Removing from list.
+[2025-11-12 22:51:29] [Client: 127.0.0.1:51554] [User: Anu] INFO: Connection closed.
+[2025-11-12 22:51:29] [Client: 127.0.0.1:41750] [User: Mannu] INFO: Client disconnected. Removing from list.
+[2025-11-12 22:51:29] [Client: 127.0.0.1:41750] [User: Mannu] INFO: Connection closed.
+[2025-11-12 22:51:48] [Client: Internal] [User: NameServer] INFO: (Persistence) Successfully loaded 13 files from registry.
+[2025-11-12 22:51:48] [Client: Internal] [User: NameServer] INFO: Name Server listening on port 8080
+[2025-11-12 22:51:51] [Client: 127.0.0.1:45518] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-12 22:51:51] [Client: 127.0.0.1:45518] [User: StorageServer] INFO: Registered SS (NM Port 9001, Client Port 9002)
+[2025-11-12 22:51:51] [Client: 127.0.0.1:45518] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-12 22:51:51] [Client: 127.0.0.1:45518] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-12 22:51:51] [Client: 127.0.0.1:45518] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-12 22:51:58] [Client: 127.0.0.1:47852] [User: Anu] REQ: REGISTER_CLIENT
+[2025-11-12 22:51:58] [Client: 127.0.0.1:47852] [User: Anu] RES: Client registration successful.
+[2025-11-12 22:52:26] [Client: 127.0.0.1:49630] [User: Mannu] REQ: REGISTER_CLIENT
+[2025-11-12 22:52:26] [Client: 127.0.0.1:49630] [User: Mannu] RES: Client registration successful.
+[2025-11-12 22:52:34] [Client: 127.0.0.1:47852] [User: Anu] REQ: VIEW_REQUESTS
+[2025-11-12 22:52:34] [Client: 127.0.0.1:47852] [User: Anu] RES: VIEW_REQUESTS success (0 requests).
+[2025-11-12 22:53:06] [Client: 127.0.0.1:49630] [User: Mannu] REQ: REQUEST_ACCESS for '11.txt' with permission 'W'
+[2025-11-12 22:53:06] [Client: Internal] [User: NameServer] CACHE: MISS for '11.txt'
+[2025-11-12 22:53:06] [Client: Internal] [User: NameServer] CACHE: ADD for '11.txt'
+[2025-11-12 22:53:06] [Client: 127.0.0.1:49630] [User: Mannu] RES: REQUEST_ACCESS for '11.txt' with permission 'W' success.
+[2025-11-12 22:53:18] [Client: 127.0.0.1:47852] [User: Anu] REQ: VIEW_REQUESTS
+[2025-11-12 22:53:18] [Client: 127.0.0.1:47852] [User: Anu] RES: VIEW_REQUESTS success (1 requests).
+[2025-11-12 22:54:09] [Client: 127.0.0.1:47852] [User: Anu] REQ: APPROVE_REQUEST for '11.txt' by 'Mannu'
+[2025-11-12 22:54:09] [Client: Internal] [User: NameServer] CACHE: HIT for '11.txt'
+[2025-11-12 22:54:09] [Client: Internal] [User: NameServer] INFO: (Persistence) System state saved to disk (13 files).
+[2025-11-12 22:54:09] [Client: 127.0.0.1:47852] [User: Anu] RES: APPROVE_REQUEST for '11.txt' by 'Mannu' success.
+[2025-11-12 22:54:32] [Client: 127.0.0.1:49630] [User: Mannu] REQ: READ for '11.txt'
+[2025-11-12 22:54:32] [Client: Internal] [User: NameServer] CACHE: HIT for '11.txt'
+[2025-11-12 22:54:32] [Client: 127.0.0.1:49630] [User: Mannu] RES: READ for '11.txt' success. Sending SS_LOCATION 127.0.0.1 9002 11.txt

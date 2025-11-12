@@ -270,3 +270,53 @@
 [2025-11-12 22:29:57] [Client: 127.0.0.1:48726] [Type: Client] REQ: READ_FILE for '10.txt'
 [2025-11-12 22:29:57] [Client: 127.0.0.1:48726] [Type: Client] RES: Successfully sent file '10.txt'.
 [2025-11-12 22:29:57] [Client: 127.0.0.1:48726] [Type: Client] INFO: Connection closed.
+[2025-11-12 22:32:59] [Client: 127.0.0.1] [Type: System] INFO: (NM-Registration) Connected to Name Server.
+[2025-11-12 22:32:59] [Client: 127.0.0.1] [Type: System] INFO: (NM-Registration) Sent registration message.
+[2025-11-12 22:32:59] [Client: Internal] [Type: System] INFO: Starting NM-facing server on port 9001
+[2025-11-12 22:32:59] [Client: Internal] [Type: System] INFO: Starting client-facing server on port 9002
+[2025-11-12 22:33:35] [Client: 127.0.0.1:35912] [Type: NameServer] INFO: Accepted new connection.
+[2025-11-12 22:33:35] [Client: 127.0.0.1:35912] [Type: NameServer] REQ: CREATE_FILE for 'mannu.txt'
+[2025-11-12 22:33:35] [Client: 127.0.0.1:35912] [Type: NameServer] RES: CREATE_FILE for 'mannu.txt' success.
+[2025-11-12 22:33:35] [Client: 127.0.0.1:35912] [Type: NameServer] INFO: Connection closed.
+[2025-11-12 22:35:55] [Client: 127.0.0.1:53616] [Type: Client] INFO: Accepted new connection.
+[2025-11-12 22:35:55] [Client: 127.0.0.1:53616] [Type: Client] REQ: WRITE_START for 'mannu.txt', sentence 0
+[2025-11-12 22:35:55] [Client: 127.0.0.1:53616] [Type: Client] ACK: WRITE_START for 'mannu.txt'. Entering session.
+[2025-11-12 22:36:02] [Client: 127.0.0.1:53616] [Type: Client] ACK: WRITE for 'mannu.txt' success (sent 0, word 0).
+[2025-11-12 22:36:12] [Client: 127.0.0.1:52074] [Type: NameServer] INFO: Accepted new connection.
+[2025-11-12 22:36:12] [Client: 127.0.0.1:52074] [Type: NameServer] REQ: DELETE_FILE for 'mannu.txt'
+[2025-11-12 22:36:12] [Client: 127.0.0.1:52074] [Type: NameServer] RES: DELETE_FILE for 'mannu.txt' success.
+[2025-11-12 22:36:12] [Client: 127.0.0.1:52074] [Type: NameServer] INFO: Connection closed.
+[2025-11-12 22:36:19] [Client: 127.0.0.1:53616] [Type: Client] ACK: WRITE for 'mannu.txt' success (sent 0, word 1).
+[2025-11-12 22:36:24] [Client: 127.0.0.1:53616] [Type: Client] REQ: ETIRW for 'mannu.txt'. Finalizing changes.
+[2025-11-12 22:36:24] [Client: 127.0.0.1:53616] [Type: Client] WARN: Failed to create .bak for 'mannu.txt'. UNDO will not be available.
+[2025-11-12 22:36:24] [Client: 127.0.0.1:53616] [Type: Client] ACK: Successfully saved changes to 'mannu.txt'.
+[2025-11-12 22:36:24] [Client: 127.0.0.1:53616] [Type: Client] INFO: Write session for 'mannu.txt' ended.
+[2025-11-12 22:36:24] [Client: 127.0.0.1:53616] [Type: Client] INFO: Connection closed.
+[2025-11-12 22:44:25] [Client: 127.0.0.1] [Type: System] INFO: (NM-Registration) Connected to Name Server.
+[2025-11-12 22:44:25] [Client: 127.0.0.1] [Type: System] INFO: (NM-Registration) Sent registration message.
+[2025-11-12 22:44:25] [Client: Internal] [Type: System] INFO: Starting NM-facing server on port 9001
+[2025-11-12 22:44:25] [Client: Internal] [Type: System] CRITICAL: (NM-Server) bind failed: Address already in use
+[2025-11-12 22:44:51] [Client: 127.0.0.1] [Type: System] INFO: (NM-Registration) Connected to Name Server.
+[2025-11-12 22:44:51] [Client: 127.0.0.1] [Type: System] INFO: (NM-Registration) Sent registration message.
+[2025-11-12 22:44:51] [Client: Internal] [Type: System] INFO: Starting NM-facing server on port 9001
+[2025-11-12 22:44:51] [Client: Internal] [Type: System] INFO: Starting client-facing server on port 9002
+[2025-11-12 22:45:48] [Client: 127.0.0.1:40544] [Type: NameServer] INFO: Accepted new connection.
+[2025-11-12 22:45:48] [Client: 127.0.0.1:40544] [Type: NameServer] REQ: CREATE_FILE for '11.txt'
+[2025-11-12 22:45:48] [Client: 127.0.0.1:40544] [Type: NameServer] RES: CREATE_FILE for '11.txt' success.
+[2025-11-12 22:45:48] [Client: 127.0.0.1:40544] [Type: NameServer] INFO: Connection closed.
+[2025-11-12 22:46:28] [Client: 127.0.0.1:36230] [Type: Client] INFO: Accepted new connection.
+[2025-11-12 22:46:28] [Client: 127.0.0.1:36230] [Type: Client] REQ: WRITE_START for '11.txt', sentence 0
+[2025-11-12 22:46:28] [Client: 127.0.0.1:36230] [Type: Client] ACK: WRITE_START for '11.txt'. Entering session.
+[2025-11-12 22:46:33] [Client: 127.0.0.1:36230] [Type: Client] ACK: WRITE for '11.txt' success (sent 0, word 0).
+[2025-11-12 22:46:39] [Client: 127.0.0.1:36230] [Type: Client] REQ: ETIRW for '11.txt'. Finalizing changes.
+[2025-11-12 22:46:39] [Client: 127.0.0.1:36230] [Type: Client] ACK: Successfully saved changes to '11.txt'.
+[2025-11-12 22:46:39] [Client: 127.0.0.1:36230] [Type: Client] INFO: Write session for '11.txt' ended.
+[2025-11-12 22:46:39] [Client: 127.0.0.1:36230] [Type: Client] INFO: Connection closed.
+[2025-11-12 22:51:51] [Client: 127.0.0.1] [Type: System] INFO: (NM-Registration) Connected to Name Server.
+[2025-11-12 22:51:51] [Client: 127.0.0.1] [Type: System] INFO: (NM-Registration) Sent registration message.
+[2025-11-12 22:51:51] [Client: Internal] [Type: System] INFO: Starting NM-facing server on port 9001
+[2025-11-12 22:51:51] [Client: Internal] [Type: System] INFO: Starting client-facing server on port 9002
+[2025-11-12 22:54:32] [Client: 127.0.0.1:50142] [Type: Client] INFO: Accepted new connection.
+[2025-11-12 22:54:32] [Client: 127.0.0.1:50142] [Type: Client] REQ: READ_FILE for '11.txt'
+[2025-11-12 22:54:32] [Client: 127.0.0.1:50142] [Type: Client] RES: Successfully sent file '11.txt'.
+[2025-11-12 22:54:32] [Client: 127.0.0.1:50142] [Type: Client] INFO: Connection closed.

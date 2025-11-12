@@ -55,6 +55,16 @@ typedef struct FolderNode {
     struct FolderNode* next;
 } FolderNode;
 
+// Access Request Structure
+typedef struct {
+    char filename[256];
+    char requester_username[256];
+    char owner_username[256];
+    char requested_permission; // 'R' for Read, 'W' for Write
+    char timestamp[128];
+    int status; // 0 = pending, 1 = approved, 2 = rejected
+} AccessRequest;
+
 // Hash Map Structures
 typedef struct HashNode {
     char key[256];             // The filename
@@ -84,6 +94,7 @@ typedef struct CacheMapEntry {
 #define MAX_CLIENTS 50 
 #define MAX_LOCKS 50
 #define MAX_FOLDERS 200
+#define MAX_ACCESS_REQUESTS 100
 #define EXEC_OUTPUT_BUFFER_SIZE 8192 
 #define NM_REGISTRY_FILE "nm_registry.dat"
 #define NM_LOG_FILE "nameserver.log"
