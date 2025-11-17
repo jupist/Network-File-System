@@ -450,6 +450,19 @@ void* handle_nm_command(void* arg) {
         log_to_file(nm_addr_str, "NameServer", "REQ: CREATE_FILE for '%s'", filename);
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
+        
+        // Ensure parent directory exists (in case filename contains a path like "folder/file.txt")
+        char dir_path[512];
+        strncpy(dir_path, file_path, sizeof(dir_path) - 1);
+        dir_path[sizeof(dir_path) - 1] = '\0';
+        
+        // Find the last '/' to get the directory part
+        char* last_slash = strrchr(dir_path, '/');
+        if (last_slash != NULL) {
+            *last_slash = '\0'; // Terminate at the last slash to get directory path
+            mkdir_recursive(dir_path, 0755); // Create parent directories if needed
+        }
+        
         FILE* file = fopen(file_path, "w");
         if (file == NULL) {
             perror("SS (NM-Handler): fopen failed");
@@ -522,6 +535,36 @@ void* handle_nm_command(void* arg) {
                 log_to_file(nm_addr_str, "NameServer", "RES: UNDO_FILE for '%s' success.", filename);
                 write(nm_socket, "ACK_UNDO_SUCCESS\n", 17);
             }
+        }
+    } else if (strcmp(command, "SYNC_FILE") == 0) {
+        // SYNC_FILE command for replication/resync - reads entire remaining buffer as file content
+        printf("SS (NM-Handler): NM requested to sync '%s'\n", filename);
+        log_to_file(nm_addr_str, "NameServer", "REQ: SYNC_FILE for '%s'", filename);
+        
+        char file_path[512];
+        snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
+        
+        // Find the start of file content (after "SYNC_FILE filename\n")
+        char* content_start = strchr(buffer, '\n');
+        if (content_start != NULL) {
+            content_start++; // Skip the newline
+            
+            // Write content to file
+            FILE* file = fopen(file_path, "w");
+            if (file == NULL) {
+                perror("SS (NM-Handler): fopen failed for SYNC_FILE");
+                log_to_file(nm_addr_str, "NameServer", "RES: SYNC_FILE for '%s' failed: fopen failed.", filename);
+                write(nm_socket, "ACK_SYNC_FAIL\n", 14);
+            } else {
+                fputs(content_start, file);
+                fclose(file);
+                printf("SS (NM-Handler): File '%s' synced successfully.\n", filename);
+                log_to_file(nm_addr_str, "NameServer", "RES: SYNC_FILE for '%s' success.", filename);
+                write(nm_socket, "ACK_SYNC_SUCCESS\n", 17);
+            }
+        } else {
+            log_to_file(nm_addr_str, "NameServer", "RES: SYNC_FILE for '%s' failed: Invalid format.", filename);
+            write(nm_socket, "ACK_SYNC_FAIL\n", 14);
         }
     } else if (strcmp(command, "CREATE_FOLDER") == 0) {
         printf("SS (NM-Handler): NM requested to create folder '%s'\n", filename);

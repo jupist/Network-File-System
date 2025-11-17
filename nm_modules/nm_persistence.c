@@ -90,6 +90,12 @@ void load_registry_from_disk() {
             log_to_file("Internal", "NameServer", "ERROR: (Persistence) Failed to read file data. Halting load.");
             break; // Stop loading, but keep what we have
         }
+        
+        // Initialize ss_index if it wasn't saved (backwards compatibility)
+        if (temp_file.ss_index < 0 || temp_file.ss_index >= MAX_SERVERS) {
+            temp_file.ss_index = 0; // Default to SS0
+        }
+        
         hash_map_insert_unsafe(temp_file);
     }
 

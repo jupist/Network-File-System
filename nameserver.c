@@ -186,6 +186,211 @@ void replicate_to_backup_ss(int primary_ss_index, const char* command) {
     printf("  Replicated command to SS%d: %s", replica_index, command);
 }
 
+/*
+ * Get file content from SS for resync purposes
+ */
+int get_file_content_from_ss(const char* ss_ip, int ss_client_port, const char* filename, char* out_buffer, int out_len) {
+    int ss_sock;
+    struct sockaddr_in ss_addr;
+    char command[BUFFER_SIZE];
+
+    if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        return -1;
+    }
+    
+    ss_addr.sin_family = AF_INET;
+    ss_addr.sin_port = htons(ss_client_port);
+    if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) {
+        close(ss_sock);
+        return -1;
+    }
+    
+    if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) {
+        close(ss_sock);
+        return -1;
+    }
+    
+    snprintf(command, sizeof(command), "READ_FILE %s\n", filename);
+    if (write(ss_sock, command, strlen(command)) < 0) {
+        close(ss_sock);
+        return -1;
+    }
+
+    ssize_t total_bytes_read = 0;
+    ssize_t bytes_read;
+    while (total_bytes_read < out_len - 1 && 
+           (bytes_read = read(ss_sock, out_buffer + total_bytes_read, out_len - 1 - total_bytes_read)) > 0) {
+        total_bytes_read += bytes_read;
+    }
+    
+    out_buffer[total_bytes_read] = '\0';
+    close(ss_sock);
+    
+    return (bytes_read < 0) ? -1 : 0;
+}
+
+/*
+ * Copy a single file from source SS to destination SS
+ */
+int copy_file_between_ss(const char* src_ip, int src_client_port, 
+                         const char* dest_ip, int dest_nm_port, 
+                         const char* filename) {
+    char file_content[BUFFER_SIZE * 8]; // Large buffer for file content
+    
+    // Step 1: Read file from source SS
+    printf("    Reading '%s' from source SS...\n", filename);
+    if (get_file_content_from_ss(src_ip, src_client_port, filename, file_content, sizeof(file_content)) != 0) {
+        printf("    Failed to read '%s' from source SS\n", filename);
+        return -1;
+    }
+    
+    // Step 2: Create and write file to destination SS
+    int dest_sock;
+    struct sockaddr_in dest_addr;
+    char command[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+    
+    // Create file first
+    if ((dest_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        return -1;
+    }
+    
+    dest_addr.sin_family = AF_INET;
+    dest_addr.sin_port = htons(dest_nm_port);
+    if (inet_pton(AF_INET, dest_ip, &dest_addr.sin_addr) <= 0) {
+        close(dest_sock);
+        return -1;
+    }
+    
+    if (connect(dest_sock, (struct sockaddr*)&dest_addr, sizeof(dest_addr)) < 0) {
+        close(dest_sock);
+        return -1;
+    }
+    
+    // Send CREATE command
+    snprintf(command, sizeof(command), "CREATE_FILE %s\n", filename);
+    write(dest_sock, command, strlen(command));
+    
+    // Read response
+    ssize_t bytes_read = read(dest_sock, response, sizeof(response) - 1);
+    close(dest_sock);
+    
+    if (bytes_read <= 0) {
+        printf("    No response from dest SS for CREATE\n");
+        return -1;
+    }
+    
+    // Small delay to ensure file is created
+    usleep(50000); // 50ms
+    
+    // Now overwrite with content from source
+    if ((dest_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        return -1;
+    }
+    
+    dest_addr.sin_port = htons(dest_nm_port);
+    if (inet_pton(AF_INET, dest_ip, &dest_addr.sin_addr) <= 0) {
+        close(dest_sock);
+        return -1;
+    }
+    
+    if (connect(dest_sock, (struct sockaddr*)&dest_addr, sizeof(dest_addr)) < 0) {
+        close(dest_sock);
+        return -1;
+    }
+    
+    // Send SYNC_FILE command header
+    snprintf(command, sizeof(command), "SYNC_FILE %s\n", filename);
+    write(dest_sock, command, strlen(command));
+    
+    // Send file content separately
+    write(dest_sock, file_content, strlen(file_content));
+    close(dest_sock);
+    
+    printf("    Successfully copied '%s'\n", filename);
+    return 0;
+}
+
+/*
+ * Resync all files from replica SS to primary SS when primary comes back online
+ */
+void* resync_from_replica_thread(void* arg) {
+    int primary_index = *(int*)arg;
+    free(arg);
+    
+    printf("  [Resync Thread] Starting for SS%d\n", primary_index);
+    
+    pthread_mutex_lock(&g_system_mutex);
+    
+    StorageServer* primary_ss = &server_list[primary_index];
+    int replica_index = primary_ss->replicated_by;
+    
+    if (replica_index < 0 || replica_index >= g_num_servers) {
+        pthread_mutex_unlock(&g_system_mutex);
+        printf("  [Resync Thread] No replica configured for SS%d\n", primary_index);
+        return NULL;
+    }
+    
+    StorageServer* replica_ss = &server_list[replica_index];
+    if (!replica_ss->is_online) {
+        pthread_mutex_unlock(&g_system_mutex);
+        printf("  [Resync Thread] Replica SS%d is offline, cannot resync\n", replica_index);
+        return NULL;
+    }
+    
+    char primary_ip[INET_ADDRSTRLEN];
+    char replica_ip[INET_ADDRSTRLEN];
+    int primary_nm_port = primary_ss->ss_nm_port;
+    int replica_client_port = replica_ss->ss_client_port;
+    strncpy(primary_ip, primary_ss->ss_ip_addr, INET_ADDRSTRLEN);
+    strncpy(replica_ip, replica_ss->ss_ip_addr, INET_ADDRSTRLEN);
+    
+    printf("  [Resync Thread] Copying files from SS%d (%s:%d) to SS%d (%s:%d)\n", 
+           replica_index, replica_ip, replica_client_port,
+           primary_index, primary_ip, primary_nm_port);
+    
+    log_to_file("Internal", "NameServer", "INFO: Starting resync SS%d from replica SS%d", 
+                primary_index, replica_index);
+    
+    // Collect list of files that belong to this primary SS
+    char files_to_sync[1000][256];
+    int num_files = 0;
+    
+    for (int i = 0; i < HASH_MAP_SIZE; i++) {
+        HashNode* current = g_file_hash_map[i];
+        while (current != NULL && num_files < 1000) {
+            if (current->file.ss_index == primary_index) {
+                strncpy(files_to_sync[num_files], current->file.filename, 255);
+                files_to_sync[num_files][255] = '\0';
+                num_files++;
+            }
+            current = current->next;
+        }
+    }
+    
+    pthread_mutex_unlock(&g_system_mutex);
+    
+    printf("  [Resync Thread] Found %d files to resync\n", num_files);
+    
+    // Copy each file from replica to primary
+    int success_count = 0;
+    for (int i = 0; i < num_files; i++) {
+        printf("  [Resync Thread] %d/%d: %s\n", i + 1, num_files, files_to_sync[i]);
+        if (copy_file_between_ss(replica_ip, replica_client_port, 
+                                 primary_ip, primary_nm_port, 
+                                 files_to_sync[i]) == 0) {
+            success_count++;
+        }
+    }
+    
+    printf("  [Resync Thread] Complete: %d/%d files synchronized to SS%d\n", 
+           success_count, num_files, primary_index);
+    log_to_file("Internal", "NameServer", "INFO: Resync complete for SS%d: %d/%d files", 
+                primary_index, success_count, num_files);
+    
+    return NULL;
+}
+
 int get_metadata_from_ss(const char* ss_ip, int ss_nm_port, const char* filename,
                          int* out_words, int* out_chars, 
                          char* out_created_ts, char* out_modified_ts, int ts_len) 
@@ -231,53 +436,6 @@ int get_metadata_from_ss(const char* ss_ip, int ss_nm_port, const char* filename
     } else {
         return -1; // Failure
     }
-}
-
-int get_file_content_from_ss(const char* ss_ip, int ss_client_port, const char* filename, char* out_buffer, int out_len) {
-    int ss_sock;
-    struct sockaddr_in ss_addr;
-    char command[BUFFER_SIZE];
-
-    if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) { 
-        perror("NM (SS-Client): socket failed");
-        return -1; 
-    }
-    ss_addr.sin_family = AF_INET;
-    ss_addr.sin_port = htons(ss_client_port);
-    if (inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr) <= 0) { 
-        perror("NM (SS-Client): invalid address");
-        close(ss_sock); 
-        return -1; 
-    }
-    if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) { 
-        perror("NM (SS-Client): connect to SS failed");
-        close(ss_sock); 
-        return -1; 
-    }
-    
-    snprintf(command, sizeof(command), "READ_FILE %s\n", filename);
-    if (write(ss_sock, command, strlen(command)) < 0) { 
-        perror("NM (SS-Client): write to SS failed");
-        close(ss_sock); 
-        return -1; 
-    }
-
-    ssize_t total_bytes_read = 0;
-    ssize_t bytes_read;
-    while (total_bytes_read < out_len - 1 && 
-           (bytes_read = read(ss_sock, out_buffer + total_bytes_read, out_len - 1 - total_bytes_read)) > 0) {
-        total_bytes_read += bytes_read;
-    }
-    
-    out_buffer[total_bytes_read] = '\0'; // Null-terminate
-    close(ss_sock);
-    
-    if (bytes_read < 0) {
-        perror("NM (SS-Client): read file content failed");
-        return -1;
-    }
-    
-    return 0; // Success
 }
 
 int forward_undo_to_ss(const char* ss_ip, int ss_nm_port, const char* filename) {
@@ -790,9 +948,19 @@ void* handle_connection(void* arg) {
             printf("  SS%d reconnected (NM Port %d, Client Port %d)\n", existing_ss_index, ss_nm_port, ss_client_port);
             log_to_file(client_addr_str, "StorageServer", "INFO: SS%d reconnected. Triggering resync...", existing_ss_index);
             
-            // TODO: Trigger resync from replica SS
-            // For now, we'll just mark it as online and let replication continue
-            // In a full implementation, we would copy all files from replica_of SS
+            // Trigger resync from replica SS in a separate thread
+            pthread_t resync_thread;
+            int* ss_index_ptr = malloc(sizeof(int));
+            if (ss_index_ptr != NULL) {
+                *ss_index_ptr = existing_ss_index;
+                if (pthread_create(&resync_thread, NULL, resync_from_replica_thread, ss_index_ptr) == 0) {
+                    pthread_detach(resync_thread);
+                    printf("  Resync thread started for SS%d\n", existing_ss_index);
+                } else {
+                    free(ss_index_ptr);
+                    printf("  Failed to start resync thread\n");
+                }
+            }
             
         } else if (g_num_servers < MAX_SERVERS) {
             int ss_index = g_num_servers;
@@ -889,7 +1057,26 @@ void* handle_connection(void* arg) {
         log_to_file(client_addr_str, username, "REQ: REGISTER_CLIENT");
 
         pthread_mutex_lock(&g_system_mutex);
-        if (g_num_clients < MAX_CLIENTS) {
+        
+        // Check if username already exists
+        int username_exists = 0;
+        for (int i = 0; i < g_num_clients; i++) {
+            if (strcmp(client_list[i].username, username) == 0) {
+                username_exists = 1;
+                break;
+            }
+        }
+        
+        if (username_exists) {
+            printf("  Username '%s' already exists. Rejecting registration.\n", username);
+            log_to_file(client_addr_str, username, "RES: Client registration failed: Username already exists.");
+            pthread_mutex_unlock(&g_system_mutex);
+            char err_msg[512];
+            snprintf(err_msg, sizeof(err_msg), "ERROR: Username '%s' is already taken. Please choose a different username.\n", username);
+            write(client_socket, err_msg, strlen(err_msg));
+            close(client_socket);
+            return NULL;
+        } else if (g_num_clients < MAX_CLIENTS) {
             ClientInfo* new_client = &client_list[g_num_clients++];
             strncpy(new_client->username, username, 255);
             new_client->username[255] = '\0';
@@ -897,11 +1084,21 @@ void* handle_connection(void* arg) {
             new_client->client_socket_fd = client_socket;
             printf("  User '%s' registered from %s.\n", username, client_addr_str);
             log_to_file(client_addr_str, username, "RES: Client registration successful.");
+            pthread_mutex_unlock(&g_system_mutex);
+            
+            // Send success response to client
+            char success_msg[] = "OK\n";
+            write(client_socket, success_msg, strlen(success_msg));
         } else {
             printf("  Max clients reached. Rejecting %s.\n", username);
             log_to_file(client_addr_str, username, "RES: Client registration failed: Max clients reached.");
+            pthread_mutex_unlock(&g_system_mutex);
+            char err_msg[512];
+            snprintf(err_msg, sizeof(err_msg), "ERROR: Maximum number of clients reached. Please try again later.\n");
+            write(client_socket, err_msg, strlen(err_msg));
+            close(client_socket);
+            return NULL;
         }
-        pthread_mutex_unlock(&g_system_mutex);
 
         // 4. Enter a loop to handle commands from *this* client
         while ((bytes_read = read(client_socket, buffer, sizeof(buffer) - 1)) > 0) {
@@ -1197,6 +1394,31 @@ void* handle_connection(void* arg) {
                             }
                         }
                         
+                        // First try to quickly ping primary SS (non-blocking check)
+                        if (primary_ss_index >= 0) {
+                            // Quick connection test to primary SS
+                            int test_sock = socket(AF_INET, SOCK_STREAM, 0);
+                            if (test_sock >= 0) {
+                                struct sockaddr_in test_addr;
+                                test_addr.sin_family = AF_INET;
+                                test_addr.sin_port = htons(file->ss_client_port);
+                                inet_pton(AF_INET, file->ss_ip_addr, &test_addr.sin_addr);
+                                
+                                // Set socket to non-blocking for quick timeout
+                                struct timeval timeout;
+                                timeout.tv_sec = 1;  // 1 second timeout
+                                timeout.tv_usec = 0;
+                                setsockopt(test_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+                                setsockopt(test_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+                                
+                                if (connect(test_sock, (struct sockaddr*)&test_addr, sizeof(test_addr)) < 0) {
+                                    server_list[primary_ss_index].is_online = 0; // Mark offline immediately
+                                    printf("  Primary SS%d unreachable, marking offline\n", primary_ss_index);
+                                }
+                                close(test_sock);
+                            }
+                        }
+                        
                         if (primary_ss_index >= 0 && !server_list[primary_ss_index].is_online) {
                             // Primary is offline, try to use replica
                             int replica_index = server_list[primary_ss_index].replicated_by;
@@ -1280,6 +1502,30 @@ void* handle_connection(void* arg) {
                                 server_list[j].ss_client_port == file->ss_client_port) {
                                 primary_ss_index = j;
                                 break;
+                            }
+                        }
+                        
+                        // Quick connectivity check to detect failures immediately
+                        if (primary_ss_index >= 0 && server_list[primary_ss_index].is_online) {
+                            int test_sock = socket(AF_INET, SOCK_STREAM, 0);
+                            if (test_sock >= 0) {
+                                struct timeval timeout;
+                                timeout.tv_sec = 1;
+                                timeout.tv_usec = 0;
+                                setsockopt(test_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+                                setsockopt(test_sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+                                
+                                struct sockaddr_in test_addr;
+                                memset(&test_addr, 0, sizeof(test_addr));
+                                test_addr.sin_family = AF_INET;
+                                test_addr.sin_port = htons(server_list[primary_ss_index].ss_client_port);
+                                inet_pton(AF_INET, server_list[primary_ss_index].ss_ip_addr, &test_addr.sin_addr);
+                                
+                                if (connect(test_sock, (struct sockaddr*)&test_addr, sizeof(test_addr)) < 0) {
+                                    server_list[primary_ss_index].is_online = 0;
+                                    printf("  Quick check: Primary SS%d unreachable, marking offline\n", primary_ss_index);
+                                }
+                                close(test_sock);
                             }
                         }
                         
@@ -1605,6 +1851,7 @@ void* handle_connection(void* arg) {
                     strncpy(new_file.last_accessed_by, "N/A", 255);
                     strncpy(new_file.last_accessed_ts, "N/A", 127);
                     strncpy(new_file.folder_path, "/", 511); // Root folder by default
+                    new_file.ss_index = selected_ss; // Track which SS owns this file
                     
                     pthread_mutex_lock(&g_system_mutex);
                     hash_map_insert_unsafe(new_file);
@@ -2168,6 +2415,30 @@ void* handle_connection(void* arg) {
                                 }
                             }
                             
+                            // Quick connectivity check to detect failures immediately
+                            if (primary_ss_index >= 0 && server_list[primary_ss_index].is_online) {
+                                int test_sock = socket(AF_INET, SOCK_STREAM, 0);
+                                if (test_sock >= 0) {
+                                    struct timeval timeout;
+                                    timeout.tv_sec = 1;
+                                    timeout.tv_usec = 0;
+                                    setsockopt(test_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+                                    setsockopt(test_sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+                                    
+                                    struct sockaddr_in test_addr;
+                                    memset(&test_addr, 0, sizeof(test_addr));
+                                    test_addr.sin_family = AF_INET;
+                                    test_addr.sin_port = htons(server_list[primary_ss_index].ss_client_port);
+                                    inet_pton(AF_INET, server_list[primary_ss_index].ss_ip_addr, &test_addr.sin_addr);
+                                    
+                                    if (connect(test_sock, (struct sockaddr*)&test_addr, sizeof(test_addr)) < 0) {
+                                        server_list[primary_ss_index].is_online = 0;
+                                        printf("  Quick check: Primary SS%d unreachable, marking offline\n", primary_ss_index);
+                                    }
+                                    close(test_sock);
+                                }
+                            }
+                            
                             if (primary_ss_index >= 0 && !server_list[primary_ss_index].is_online) {
                                 // Primary is offline, try to use replica
                                 int replica_index = server_list[primary_ss_index].replicated_by;
@@ -2245,20 +2516,63 @@ void* handle_connection(void* arg) {
                 }
 
                 if (lock_index != -1) {
+                    // Find the file to get ss_index for replication
+                    FileLocation* file = hash_map_find_unsafe(filename);
+                    int ss_index_for_repl = -1;
+                    char primary_ip[INET_ADDRSTRLEN];
+                    int primary_client_port = -1;
+                    int replica_index = -1;
+                    char replica_ip[INET_ADDRSTRLEN];
+                    int replica_nm_port = -1;
+                    
+                    if (file != NULL) {
+                        ss_index_for_repl = file->ss_index;
+                        strncpy(primary_ip, file->ss_ip_addr, INET_ADDRSTRLEN);
+                        primary_client_port = file->ss_client_port;
+                        
+                        // Get replica info
+                        if (ss_index_for_repl >= 0 && ss_index_for_repl < g_num_servers) {
+                            replica_index = server_list[ss_index_for_repl].replicated_by;
+                            if (replica_index >= 0 && replica_index < g_num_servers && 
+                                server_list[replica_index].is_online) {
+                                strncpy(replica_ip, server_list[replica_index].ss_ip_addr, INET_ADDRSTRLEN);
+                                replica_nm_port = server_list[replica_index].ss_nm_port;
+                            }
+                        }
+                    }
+                    
                     for (int i = lock_index; i < g_num_locks - 1; i++) {
                         g_file_locks[i] = g_file_locks[i + 1];
                     }
                     g_num_locks--;
+                    
+                    pthread_mutex_unlock(&g_system_mutex);
+                    
                     printf("  Lock released.\n");
                     log_to_file(client_addr_str, username, "RES: Lock released for '%s' (sent %d).", filename, sentence_num);
+                    
+                    // Immediately replicate the updated file content to backup
+                    if (replica_index >= 0 && replica_nm_port > 0) {
+                        printf("  Replicating updated file '%s' to SS%d...\n", filename, replica_index);
+                        
+                        // Copy file from primary to replica
+                        if (copy_file_between_ss(primary_ip, primary_client_port, 
+                                                 replica_ip, replica_nm_port, 
+                                                 filename) == 0) {
+                            printf("  Successfully replicated '%s' to backup SS%d\n", filename, replica_index);
+                        } else {
+                            printf("  Failed to replicate '%s' to backup SS%d\n", filename, replica_index);
+                        }
+                    }
+                    
                     write(client_socket, "ACK_LOCK_RELEASED\n", 18);
                 } else {
+                    pthread_mutex_unlock(&g_system_mutex);
                     printf("  Invalid lock release request.\n");
                     log_to_file(client_addr_str, username, "RES: RELEASE_LOCK failed: Lock not held by user.");
                     snprintf(err_msg, sizeof(err_msg), "ERROR %d: You do not hold that lock.\n", ERROR_ACCESS_DENIED);
                     write(client_socket, err_msg, strlen(err_msg));
                 }
-                pthread_mutex_unlock(&g_system_mutex);
 
             } else if (strncmp(buffer, "CHECKPOINT", 10) == 0) {
                 char filename[256], checkpoint_tag[128];

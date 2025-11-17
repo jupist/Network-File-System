@@ -383,6 +383,28 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    // Wait for registration response from nameserver
+    char response[BUFFER_SIZE];
+    ssize_t bytes_read = read(nm_socket, response, sizeof(response) - 1);
+    if (bytes_read > 0) {
+        response[bytes_read] = '\0';
+        // Check if it's an error message
+        if (strncmp(response, "ERROR", 5) == 0) {
+            printf("%s", response);
+            close(nm_socket);
+            exit(EXIT_FAILURE);
+        }
+        // If it's not an error, registration was successful, continue
+    } else if (bytes_read == 0) {
+        printf("ERROR: Nameserver closed connection during registration.\n");
+        close(nm_socket);
+        exit(EXIT_FAILURE);
+    } else {
+        perror("Failed to receive registration response");
+        close(nm_socket);
+        exit(EXIT_FAILURE);
+    }
+
     command_loop(nm_socket);
 
     close(nm_socket);

@@ -27,7 +27,8 @@ typedef struct {
     char last_accessed_ts[128]; 
 
     int ss_client_port;      
-    char ss_ip_addr[INET_ADDRSTRLEN]; 
+    char ss_ip_addr[INET_ADDRSTRLEN];
+    int ss_index;                // Index of primary SS that owns this file
 } FileLocation;
 
 typedef struct {
@@ -100,8 +101,8 @@ typedef struct CacheMapEntry {
 #define MAX_LOCKS 50
 #define MAX_FOLDERS 200
 #define MAX_ACCESS_REQUESTS 100
-#define HEARTBEAT_TIMEOUT 30  // Seconds before SS considered failed
-#define HEARTBEAT_INTERVAL 10 // Seconds between heartbeats from SS
+#define HEARTBEAT_TIMEOUT 15  // Seconds before SS considered failed (reduced from 30)
+#define HEARTBEAT_INTERVAL 5  // Seconds between heartbeats from SS (reduced from 10)
 #define EXEC_OUTPUT_BUFFER_SIZE 8192 
 #define NM_REGISTRY_FILE "nm_registry.dat"
 #define NM_LOG_FILE "nameserver.log"
