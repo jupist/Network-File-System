@@ -489,3 +489,169 @@
 [2025-11-12 22:54:32] [Client: 127.0.0.1:49630] [User: Mannu] REQ: READ for '11.txt'
 [2025-11-12 22:54:32] [Client: Internal] [User: NameServer] CACHE: HIT for '11.txt'
 [2025-11-12 22:54:32] [Client: 127.0.0.1:49630] [User: Mannu] RES: READ for '11.txt' success. Sending SS_LOCATION 127.0.0.1 9002 11.txt
+[2025-11-12 23:34:06] [Client: 127.0.0.1:49630] [User: Mannu] INFO: Client disconnected. Removing from list.
+[2025-11-12 23:34:06] [Client: 127.0.0.1:49630] [User: Mannu] INFO: Connection closed.
+[2025-11-12 23:34:06] [Client: 127.0.0.1:47852] [User: Anu] INFO: Client disconnected. Removing from list.
+[2025-11-12 23:34:06] [Client: 127.0.0.1:47852] [User: Anu] INFO: Connection closed.
+[2025-11-13 10:55:13] [Client: Internal] [User: NameServer] INFO: (Persistence) Successfully loaded 13 files from registry.
+[2025-11-13 10:55:13] [Client: Internal] [User: NameServer] INFO: Heartbeat monitoring thread started
+[2025-11-13 10:55:13] [Client: Internal] [User: NameServer] INFO: Name Server listening on port 8080
+[2025-11-13 10:55:15] [Client: 127.0.0.1:52118] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-13 10:55:15] [Client: 127.0.0.1:52118] [User: StorageServer] INFO: Registered SS0 (NM Port 9001, Client Port 9002)
+[2025-11-13 10:55:15] [Client: 127.0.0.1:52118] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-13 10:55:15] [Client: 127.0.0.1:52118] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-13 10:55:15] [Client: 127.0.0.1:52118] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-13 10:55:17] [Client: 127.0.0.1:52130] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-13 10:55:17] [Client: 127.0.0.1:52130] [User: StorageServer] INFO: SS0 reconnected. Triggering resync...
+[2025-11-13 10:55:17] [Client: 127.0.0.1:52130] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-13 10:55:17] [Client: 127.0.0.1:52130] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-13 10:55:17] [Client: 127.0.0.1:52130] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-13 11:06:07] [Client: Internal] [User: NameServer] INFO: (Persistence) Successfully loaded 13 files from registry.
+[2025-11-13 11:06:07] [Client: Internal] [User: NameServer] INFO: Heartbeat monitoring thread started
+[2025-11-13 11:06:07] [Client: Internal] [User: NameServer] INFO: Name Server listening on port 8080
+[2025-11-13 11:06:10] [Client: 127.0.0.1:45294] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-13 11:06:10] [Client: 127.0.0.1:45294] [User: StorageServer] INFO: Registered SS0 (NM Port 9001, Client Port 9002)
+[2025-11-13 11:06:10] [Client: 127.0.0.1:45294] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-13 11:06:10] [Client: 127.0.0.1:45294] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-13 11:06:10] [Client: 127.0.0.1:45294] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-13 11:06:18] [Client: 127.0.0.1:45306] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-13 11:06:18] [Client: 127.0.0.1:45306] [User: StorageServer] INFO: SS0 reconnected. Triggering resync...
+[2025-11-13 11:06:18] [Client: 127.0.0.1:45306] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-13 11:06:18] [Client: 127.0.0.1:45306] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-13 11:06:18] [Client: 127.0.0.1:45306] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-13 11:07:17] [Client: Internal] [User: NameServer] WARNING: SS0 marked OFFLINE (no heartbeat for 37 seconds)
+[2025-11-14 13:54:01] [Client: Internal] [User: NameServer] INFO: (Persistence) Successfully loaded 13 files from registry.
+[2025-11-14 13:54:01] [Client: Internal] [User: NameServer] INFO: Heartbeat monitoring thread started
+[2025-11-14 13:54:01] [Client: Internal] [User: NameServer] INFO: Name Server listening on port 8080
+[2025-11-14 13:54:22] [Client: 127.0.0.1:43590] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-14 13:54:22] [Client: 127.0.0.1:43590] [User: StorageServer] INFO: Registered SS0 (NM Port 9001, Client Port 9002)
+[2025-11-14 13:54:22] [Client: 127.0.0.1:43590] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-14 13:54:22] [Client: 127.0.0.1:43590] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-14 13:54:22] [Client: 127.0.0.1:43590] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-14 14:20:51] [Client: Internal] [User: NameServer] INFO: (Persistence) Successfully loaded 13 files from registry.
+[2025-11-14 14:20:51] [Client: Internal] [User: NameServer] INFO: Heartbeat monitoring thread started
+[2025-11-14 14:20:51] [Client: Internal] [User: NameServer] INFO: Name Server listening on port 8080
+[2025-11-14 14:21:03] [Client: 127.0.0.1:37222] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-14 14:21:03] [Client: 127.0.0.1:37222] [User: StorageServer] INFO: Registered SS0 (NM Port 9001, Client Port 9002)
+[2025-11-14 14:21:03] [Client: 127.0.0.1:37222] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-14 14:21:03] [Client: 127.0.0.1:37222] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-14 14:21:03] [Client: 127.0.0.1:37222] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-14 14:21:14] [Client: 127.0.0.1:33458] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-14 14:21:14] [Client: 127.0.0.1:33458] [User: StorageServer] INFO: SS1 will replicate SS0
+[2025-11-14 14:21:14] [Client: 127.0.0.1:33458] [User: StorageServer] INFO: Registered SS1 (NM Port 9003, Client Port 9004)
+[2025-11-14 14:21:14] [Client: 127.0.0.1:33458] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-14 14:21:14] [Client: 127.0.0.1:33458] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-14 14:21:14] [Client: 127.0.0.1:33458] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-14 14:21:27] [Client: 127.0.0.1:38192] [User: Anu] REQ: REGISTER_CLIENT
+[2025-11-14 14:21:27] [Client: 127.0.0.1:38192] [User: Anu] RES: Client registration successful.
+[2025-11-14 14:21:47] [Client: 127.0.0.1:38192] [User: Anu] REQ: CREATE for 'testfile1.txt'
+[2025-11-14 14:21:47] [Client: 127.0.0.1:38192] [User: Anu] INFO: Assigning 'testfile1.txt' to SS0 (Round-robin)
+[2025-11-14 14:21:47] [Client: Internal] [User: NameServer] INFO: (Persistence) System state saved to disk (14 files).
+[2025-11-14 14:21:47] [Client: 127.0.0.1:38192] [User: Anu] RES: CREATE for 'testfile1.txt' success.
+[2025-11-14 14:22:06] [Client: 127.0.0.1:38192] [User: Anu] REQ: WRITE for 'testfile1.txt', sentence 0.
+[2025-11-14 14:22:06] [Client: Internal] [User: NameServer] CACHE: MISS for 'testfile1.txt'
+[2025-11-14 14:22:06] [Client: Internal] [User: NameServer] CACHE: ADD for 'testfile1.txt'
+[2025-11-14 14:22:06] [Client: 127.0.0.1:38192] [User: Anu] INFO: Lock granted for 'testfile1.txt' (sent 0).
+[2025-11-14 14:22:06] [Client: 127.0.0.1:38192] [User: Anu] RES: WRITE for 'testfile1.txt' success. Sending SS_LOCATION 127.0.0.1 9002 testfile1.txt
+[2025-11-14 14:22:26] [Client: 127.0.0.1:38192] [User: Anu] REQ: RELEASE_LOCK for 'testfile1.txt' (sent 0).
+[2025-11-14 14:22:26] [Client: 127.0.0.1:38192] [User: Anu] RES: Lock released for 'testfile1.txt' (sent 0).
+[2025-11-14 14:22:51] [Client: 127.0.0.1:37196] [User: Aman] REQ: REGISTER_CLIENT
+[2025-11-14 14:22:51] [Client: 127.0.0.1:37196] [User: Aman] RES: Client registration successful.
+[2025-11-14 14:23:02] [Client: 127.0.0.1:37196] [User: Aman] REQ: CREATE for 'testfile2.txt'
+[2025-11-14 14:23:02] [Client: 127.0.0.1:37196] [User: Aman] INFO: Assigning 'testfile2.txt' to SS1 (Round-robin)
+[2025-11-14 14:23:02] [Client: Internal] [User: NameServer] INFO: (Persistence) System state saved to disk (15 files).
+[2025-11-14 14:23:02] [Client: 127.0.0.1:37196] [User: Aman] RES: CREATE for 'testfile2.txt' success.
+[2025-11-14 14:24:16] [Client: 127.0.0.1:37196] [User: Aman] REQ: WRITE for 'testfile2.txt', sentence 0.
+[2025-11-14 14:24:16] [Client: Internal] [User: NameServer] CACHE: MISS for 'testfile2.txt'
+[2025-11-14 14:24:16] [Client: Internal] [User: NameServer] CACHE: ADD for 'testfile2.txt'
+[2025-11-14 14:24:16] [Client: 127.0.0.1:37196] [User: Aman] INFO: Lock granted for 'testfile2.txt' (sent 0).
+[2025-11-14 14:24:16] [Client: 127.0.0.1:37196] [User: Aman] RES: WRITE for 'testfile2.txt' success. Sending SS_LOCATION 127.0.0.1 9004 testfile2.txt
+[2025-11-14 14:24:29] [Client: 127.0.0.1:37196] [User: Aman] REQ: RELEASE_LOCK for 'testfile2.txt' (sent 0).
+[2025-11-14 14:24:29] [Client: 127.0.0.1:37196] [User: Aman] RES: Lock released for 'testfile2.txt' (sent 0).
+[2025-11-14 14:30:10] [Client: 127.0.0.1:37196] [User: Aman] INFO: Client disconnected. Removing from list.
+[2025-11-14 14:30:10] [Client: 127.0.0.1:37196] [User: Aman] INFO: Connection closed.
+[2025-11-14 14:30:11] [Client: 127.0.0.1:38192] [User: Anu] INFO: Client disconnected. Removing from list.
+[2025-11-14 14:30:11] [Client: 127.0.0.1:38192] [User: Anu] INFO: Connection closed.
+[2025-11-14 14:30:28] [Client: Internal] [User: NameServer] INFO: (Persistence) No existing registry file found. Starting fresh.
+[2025-11-14 14:30:28] [Client: Internal] [User: NameServer] INFO: Heartbeat monitoring thread started
+[2025-11-14 14:30:28] [Client: Internal] [User: NameServer] INFO: Name Server listening on port 8080
+[2025-11-14 14:30:48] [Client: 127.0.0.1:59066] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-14 14:30:48] [Client: 127.0.0.1:59066] [User: StorageServer] INFO: Registered SS0 (NM Port 9001, Client Port 9002)
+[2025-11-14 14:30:48] [Client: 127.0.0.1:59066] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-14 14:30:48] [Client: 127.0.0.1:59066] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-14 14:30:48] [Client: 127.0.0.1:59066] [User: StorageServer] INFO: Registered new non-persistent file: testfile1.txt
+[2025-11-14 14:30:48] [Client: 127.0.0.1:59066] [User: StorageServer] INFO: Registered new non-persistent file: testfile2.txt
+[2025-11-14 14:30:48] [Client: 127.0.0.1:59066] [User: StorageServer] INFO: Registered new non-persistent file: testfile2.txt.bak
+[2025-11-14 14:30:48] [Client: 127.0.0.1:59066] [User: StorageServer] INFO: Registered new non-persistent file: testfile1.txt.bak
+[2025-11-14 14:30:48] [Client: 127.0.0.1:59066] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-14 14:31:08] [Client: 127.0.0.1:46254] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-14 14:31:08] [Client: 127.0.0.1:46254] [User: StorageServer] INFO: SS1 will replicate SS0
+[2025-11-14 14:31:08] [Client: 127.0.0.1:46254] [User: StorageServer] INFO: Registered SS1 (NM Port 9003, Client Port 9004)
+[2025-11-14 14:31:08] [Client: 127.0.0.1:46254] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-14 14:31:08] [Client: 127.0.0.1:46254] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-14 14:31:08] [Client: 127.0.0.1:46254] [User: StorageServer] INFO: Registered new non-persistent file: testfile1.txt
+[2025-11-14 14:31:08] [Client: 127.0.0.1:46254] [User: StorageServer] INFO: Registered new non-persistent file: testfile2.txt
+[2025-11-14 14:31:08] [Client: 127.0.0.1:46254] [User: StorageServer] INFO: Registered new non-persistent file: testfile2.txt.bak
+[2025-11-14 14:31:08] [Client: 127.0.0.1:46254] [User: StorageServer] INFO: Registered new non-persistent file: testfile1.txt.bak
+[2025-11-14 14:31:08] [Client: 127.0.0.1:46254] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-14 14:40:25] [Client: Internal] [User: NameServer] INFO: (Persistence) No existing registry file found. Starting fresh.
+[2025-11-14 14:40:25] [Client: Internal] [User: NameServer] INFO: Heartbeat monitoring thread started
+[2025-11-14 14:40:25] [Client: Internal] [User: NameServer] INFO: Name Server listening on port 8080
+[2025-11-14 14:40:28] [Client: 127.0.0.1:41818] [User: StorageServer] WARNING: HEARTBEAT from unknown SS (port 9003)
+[2025-11-14 14:40:28] [Client: 127.0.0.1:41830] [User: StorageServer] WARNING: HEARTBEAT from unknown SS (port 9001)
+[2025-11-14 14:40:38] [Client: 127.0.0.1:50078] [User: StorageServer] WARNING: HEARTBEAT from unknown SS (port 9003)
+[2025-11-14 14:40:48] [Client: 127.0.0.1:58138] [User: StorageServer] WARNING: HEARTBEAT from unknown SS (port 9003)
+[2025-11-14 14:40:48] [Client: 127.0.0.1:58144] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-14 14:40:48] [Client: 127.0.0.1:58144] [User: StorageServer] INFO: Registered SS0 (NM Port 9001, Client Port 9002)
+[2025-11-14 14:40:48] [Client: 127.0.0.1:58144] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-14 14:40:48] [Client: 127.0.0.1:58144] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-14 14:40:48] [Client: 127.0.0.1:58144] [User: StorageServer] INFO: Registered new non-persistent file: testfile1.txt
+[2025-11-14 14:40:48] [Client: 127.0.0.1:58144] [User: StorageServer] INFO: Registered new non-persistent file: testfile2.txt
+[2025-11-14 14:40:48] [Client: 127.0.0.1:58144] [User: StorageServer] INFO: Registered new non-persistent file: testfile2.txt.bak
+[2025-11-14 14:40:48] [Client: 127.0.0.1:58144] [User: StorageServer] INFO: Registered new non-persistent file: testfile1.txt.bak
+[2025-11-14 14:40:48] [Client: 127.0.0.1:58144] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-14 14:41:00] [Client: 127.0.0.1:55962] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-14 14:41:00] [Client: 127.0.0.1:55962] [User: StorageServer] INFO: SS1 will replicate SS0
+[2025-11-14 14:41:00] [Client: 127.0.0.1:55962] [User: StorageServer] INFO: Registered SS1 (NM Port 9003, Client Port 9004)
+[2025-11-14 14:41:00] [Client: 127.0.0.1:55962] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-14 14:41:00] [Client: 127.0.0.1:55962] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-14 14:41:00] [Client: 127.0.0.1:55962] [User: StorageServer] INFO: Registered new non-persistent file: testfile1.txt
+[2025-11-14 14:41:00] [Client: 127.0.0.1:55962] [User: StorageServer] INFO: Registered new non-persistent file: testfile2.txt
+[2025-11-14 14:41:00] [Client: 127.0.0.1:55962] [User: StorageServer] INFO: Registered new non-persistent file: testfile2.txt.bak
+[2025-11-14 14:41:00] [Client: 127.0.0.1:55962] [User: StorageServer] INFO: Registered new non-persistent file: testfile1.txt.bak
+[2025-11-14 14:41:00] [Client: 127.0.0.1:55962] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-14 14:41:17] [Client: 127.0.0.1:60640] [User: Anu] REQ: REGISTER_CLIENT
+[2025-11-14 14:41:17] [Client: 127.0.0.1:60640] [User: Anu] RES: Client registration successful.
+[2025-11-14 14:41:27] [Client: 127.0.0.1:48238] [User: Aman] REQ: REGISTER_CLIENT
+[2025-11-14 14:41:27] [Client: 127.0.0.1:48238] [User: Aman] RES: Client registration successful.
+[2025-11-14 14:44:35] [Client: Internal] [User: NameServer] WARNING: SS1 marked OFFLINE (no heartbeat for 35 seconds)
+[2025-11-14 14:45:38] [Client: 127.0.0.1:56476] [User: StorageServer] REQ: REGISTER_SS
+[2025-11-14 14:45:38] [Client: 127.0.0.1:56476] [User: StorageServer] INFO: SS1 reconnected. Triggering resync...
+[2025-11-14 14:45:38] [Client: 127.0.0.1:56476] [User: StorageServer] INFO: Registered new non-persistent file: nuh_uh.txt
+[2025-11-14 14:45:38] [Client: 127.0.0.1:56476] [User: StorageServer] INFO: Registered new non-persistent file: wowee.txt
+[2025-11-14 14:45:38] [Client: 127.0.0.1:56476] [User: StorageServer] INFO: Registered new non-persistent file: testfile1.txt
+[2025-11-14 14:45:38] [Client: 127.0.0.1:56476] [User: StorageServer] INFO: Registered new non-persistent file: testfile2.txt
+[2025-11-14 14:45:38] [Client: 127.0.0.1:56476] [User: StorageServer] INFO: Registered new non-persistent file: testfile2.txt.bak
+[2025-11-14 14:45:38] [Client: 127.0.0.1:56476] [User: StorageServer] INFO: Registered new non-persistent file: testfile1.txt.bak
+[2025-11-14 14:45:38] [Client: 127.0.0.1:56476] [User: StorageServer] INFO: Registration complete. Connection closed.
+[2025-11-14 14:45:49] [Client: 127.0.0.1:60640] [User: Anu] REQ: CREATE for 'one.txt'
+[2025-11-14 14:45:49] [Client: 127.0.0.1:60640] [User: Anu] INFO: Assigning 'one.txt' to SS0 (Round-robin)
+[2025-11-14 14:45:49] [Client: Internal] [User: NameServer] INFO: (Persistence) System state saved to disk (1 files).
+[2025-11-14 14:45:49] [Client: 127.0.0.1:60640] [User: Anu] RES: CREATE for 'one.txt' success.
+[2025-11-14 14:45:57] [Client: 127.0.0.1:48238] [User: Aman] REQ: CREATE for 'two.txt'
+[2025-11-14 14:45:57] [Client: 127.0.0.1:48238] [User: Aman] INFO: Assigning 'two.txt' to SS1 (Round-robin)
+[2025-11-14 14:45:57] [Client: Internal] [User: NameServer] INFO: (Persistence) System state saved to disk (2 files).
+[2025-11-14 14:45:57] [Client: 127.0.0.1:48238] [User: Aman] RES: CREATE for 'two.txt' success.
+[2025-11-14 14:47:16] [Client: 127.0.0.1:48238] [User: Aman] REQ: READ for 'two.txt'
+[2025-11-14 14:47:16] [Client: Internal] [User: NameServer] CACHE: MISS for 'two.txt'
+[2025-11-14 14:47:16] [Client: Internal] [User: NameServer] CACHE: ADD for 'two.txt'
+[2025-11-14 14:47:16] [Client: 127.0.0.1:48238] [User: Aman] RES: READ for 'two.txt' success. Sending SS_LOCATION 127.0.0.1 9004 two.txt
+[2025-11-14 14:47:35] [Client: Internal] [User: NameServer] WARNING: SS1 marked OFFLINE (no heartbeat for 37 seconds)
+[2025-11-14 14:47:49] [Client: 127.0.0.1:48238] [User: Aman] REQ: READ for 'two.txt'
+[2025-11-14 14:47:49] [Client: Internal] [User: NameServer] CACHE: HIT for 'two.txt'
+[2025-11-14 14:47:49] [Client: 127.0.0.1:48238] [User: Aman] RES: READ for 'two.txt' success. Sending SS_LOCATION 127.0.0.1 9004 two.txt
+[2025-11-14 15:31:25] [Client: Internal] [User: NameServer] WARNING: SS0 marked OFFLINE (no heartbeat for 1776 seconds)
+[2025-11-14 15:35:06] [Client: 127.0.0.1:48238] [User: Aman] INFO: Client disconnected. Removing from list.
+[2025-11-14 15:35:06] [Client: 127.0.0.1:48238] [User: Aman] INFO: Connection closed.
+[2025-11-14 15:35:06] [Client: 127.0.0.1:60640] [User: Anu] INFO: Client disconnected. Removing from list.
+[2025-11-14 15:35:06] [Client: 127.0.0.1:60640] [User: Anu] INFO: Connection closed.

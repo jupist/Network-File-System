@@ -13,20 +13,15 @@
 #include <errno.h>     // For errno, EEXIST, ENOTDIR
 #include "common.h" 
 // --- Define This Storage Server's Details ---
-#define SS_NM_PORT 9001       // Port for NM to connect to
-#define SS_CLIENT_PORT 9002   // Port for Clients to connect to
-#define SS_STORAGE_DIR "ss_storage/"
+// Default ports (can be overridden by command-line arguments)
+int SS_NM_PORT = 9001;       // Port for NM to connect to
+int SS_CLIENT_PORT = 9002;   // Port for Clients to connect to
+char SS_STORAGE_DIR[256] = "ss_storage/";  // Storage directory
 
 // Use module-provided types, logging, and document helpers
 #include "ss_modules/ss_types.h"
 #include "ss_modules/ss_logging.h"
 #include "ss_modules/ss_document.h"
-
-const char* my_files[] = {
-    "wowee.txt",
-    "nuh_uh.txt"
-};
-int num_files = 2;
 
 // Forward Declarations (implemented later in this file)
 void* handle_nm_command(void* arg);
@@ -269,7 +264,7 @@ void* handle_client_request(void* arg) {
                 printf("SS (Write): Received ETIRW. Finalizing changes.\n");
                 log_to_file(client_addr_str, "Client", "REQ: ETIRW for '%s'. Finalizing changes.", filename);
                 
-                char bak_file_path[512];
+                char bak_file_path[1024];
                 snprintf(bak_file_path, sizeof(bak_file_path), "%s%s.bak", SS_STORAGE_DIR, filename);
                 
                 if (rename(file_path, bak_file_path) != 0) {
@@ -503,8 +498,8 @@ void* handle_nm_command(void* arg) {
     } else if (strcmp(command, "UNDO_FILE") == 0) {
         printf("SS (NM-Handler): NM requested to undo '%s'\n", filename);
         log_to_file(nm_addr_str, "NameServer", "REQ: UNDO_FILE for '%s'", filename);
-        char file_path[512];
-        char bak_file_path[512];
+        char file_path[1024];
+        char bak_file_path[1024];
         snprintf(file_path, sizeof(file_path), "%s%s", SS_STORAGE_DIR, filename);
         snprintf(bak_file_path, sizeof(bak_file_path), "%s%s.bak", SS_STORAGE_DIR, filename);
 
@@ -894,9 +889,22 @@ void register_with_name_server() {
     
     int offset = sprintf(registration_msg, "REGISTER_SS %d %d", 
                          SS_NM_PORT, SS_CLIENT_PORT);
-    for (int i = 0; i < num_files; i++) {
-        offset += sprintf(registration_msg + offset, " %s", my_files[i]);
+    
+    // Dynamically scan storage directory for files
+    DIR* dir = opendir(SS_STORAGE_DIR);
+    if (dir != NULL) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != NULL) {
+            // Skip . and .. entries, and only include regular files
+            if (entry->d_type == DT_REG) {
+                offset += sprintf(registration_msg + offset, " %s", entry->d_name);
+            }
+        }
+        closedir(dir);
+    } else {
+        log_to_file("127.0.0.1", "System", "WARN: (NM-Registration) Could not open storage directory: %s", SS_STORAGE_DIR);
     }
+    
     sprintf(registration_msg + offset, "\n");
     
     if (write(sock, registration_msg, strlen(registration_msg)) < 0) {
@@ -911,8 +919,89 @@ void register_with_name_server() {
     // --- **** END OF MODIFICATION **** ---
 }
 
-int main() {
+/*
+ * --- Heartbeat Sending Thread ---
+ */
+void* send_heartbeats(void* arg) {
+    (void)arg;
+    
+    while (1) {
+        sleep(10); // HEARTBEAT_INTERVAL = 10 seconds
+        
+        int sock;
+        struct sockaddr_in nm_addr;
+        char heartbeat_msg[64];
+        char response[32];
+        
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) {
+            perror("SS: heartbeat socket creation failed");
+            continue;
+        }
+        
+        nm_addr.sin_family = AF_INET;
+        nm_addr.sin_port = htons(NAME_SERVER_PORT);
+        if (inet_pton(AF_INET, "127.0.0.1", &nm_addr.sin_addr) <= 0) {
+            close(sock);
+            continue;
+        }
+        
+        if (connect(sock, (struct sockaddr*)&nm_addr, sizeof(nm_addr)) < 0) {
+            close(sock);
+            continue;
+        }
+        
+        sprintf(heartbeat_msg, "HEARTBEAT %d\n", SS_NM_PORT);
+        if (write(sock, heartbeat_msg, strlen(heartbeat_msg)) < 0) {
+            perror("SS: failed to send heartbeat");
+        } else {
+            int n = read(sock, response, sizeof(response) - 1);
+            if (n > 0) {
+                response[n] = '\0';
+            }
+        }
+        
+        close(sock);
+    }
+    
+    return NULL;
+}
+
+int main(int argc, char* argv[]) {
+    // Parse command-line arguments: ./storageserver <nm_port> <client_port> [storage_dir]
+    if (argc >= 3) {
+        SS_NM_PORT = atoi(argv[1]);
+        SS_CLIENT_PORT = atoi(argv[2]);
+        if (argc >= 4) {
+            snprintf(SS_STORAGE_DIR, sizeof(SS_STORAGE_DIR), "%s", argv[3]);
+            // Ensure trailing slash
+            int len = strlen(SS_STORAGE_DIR);
+            if (len > 0 && SS_STORAGE_DIR[len-1] != '/') {
+                strncat(SS_STORAGE_DIR, "/", sizeof(SS_STORAGE_DIR) - len - 1);
+            }
+        }
+        printf("SS: Starting with NM Port=%d, Client Port=%d, Storage Dir=%s\n", 
+               SS_NM_PORT, SS_CLIENT_PORT, SS_STORAGE_DIR);
+    } else if (argc > 1) {
+        printf("Usage: %s [nm_port client_port [storage_dir]]\n", argv[0]);
+        printf("  nm_port      - Port for Name Server communication (default: 9001)\n");
+        printf("  client_port  - Port for Client communication (default: 9002)\n");
+        printf("  storage_dir  - Directory for file storage (default: ss_storage/)\n");
+        printf("\nStarting with default ports...\n");
+    }
+    
     register_with_name_server();
+    
+    // Start heartbeat sending thread
+    pthread_t heartbeat_thread_id;
+    if (pthread_create(&heartbeat_thread_id, NULL, send_heartbeats, NULL) != 0) {
+        perror("SS: Failed to create heartbeat thread");
+        log_to_file("Internal", "System", "ERROR: Failed to create heartbeat thread: %m");
+    } else {
+        pthread_detach(heartbeat_thread_id);
+        printf("SS: Heartbeat thread started\n");
+        log_to_file("Internal", "System", "INFO: Heartbeat thread started");
+    }
     
     pthread_t client_server_thread_id;
     if (pthread_create(&client_server_thread_id, NULL, start_client_server, NULL) != 0) {

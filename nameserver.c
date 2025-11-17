@@ -33,6 +33,7 @@ int g_num_clients = 0;
 int g_num_locks = 0;
 int g_num_folders = 0;
 int g_num_access_requests = 0;
+int g_next_ss_for_file = 0; // Round-robin counter for file distribution
 
 // --- **** NEW: LRU CACHE GLOBALS **** ---
 CacheMapEntry* g_cache_map[CACHE_MAP_SIZE];
@@ -131,6 +132,58 @@ int forward_delete_to_ss(const char* ss_ip, int ss_nm_port, const char* filename
     } else {
         return -1; 
     }
+}
+
+/*
+ * Asynchronously replicate a command to the replica SS (if it exists and is online).
+ * This function sends the command but does not wait for a response.
+ */
+void replicate_to_backup_ss(int primary_ss_index, const char* command) {
+    pthread_mutex_lock(&g_system_mutex);
+    
+    int replica_index = server_list[primary_ss_index].replicated_by;
+    if (replica_index < 0 || replica_index >= g_num_servers) {
+        pthread_mutex_unlock(&g_system_mutex);
+        return; // No replica configured
+    }
+    
+    StorageServer* replica_ss = &server_list[replica_index];
+    if (!replica_ss->is_online) {
+        pthread_mutex_unlock(&g_system_mutex);
+        printf("  Replica SS%d is offline, skipping replication\n", replica_index);
+        return; // Replica is offline
+    }
+    
+    char replica_ip[INET_ADDRSTRLEN];
+    int replica_nm_port = replica_ss->ss_nm_port;
+    strncpy(replica_ip, replica_ss->ss_ip_addr, INET_ADDRSTRLEN);
+    
+    pthread_mutex_unlock(&g_system_mutex);
+    
+    // Send command asynchronously (don't wait for response)
+    int ss_sock;
+    struct sockaddr_in ss_addr;
+    
+    if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        return;
+    }
+    
+    ss_addr.sin_family = AF_INET;
+    ss_addr.sin_port = htons(replica_nm_port);
+    if (inet_pton(AF_INET, replica_ip, &ss_addr.sin_addr) <= 0) {
+        close(ss_sock);
+        return;
+    }
+    
+    if (connect(ss_sock, (struct sockaddr*)&ss_addr, sizeof(ss_addr)) < 0) {
+        close(ss_sock);
+        return;
+    }
+    
+    write(ss_sock, command, strlen(command));
+    close(ss_sock); // Don't wait for response
+    
+    printf("  Replicated command to SS%d: %s", replica_index, command);
 }
 
 int get_metadata_from_ss(const char* ss_ip, int ss_nm_port, const char* filename,
@@ -717,13 +770,54 @@ void* handle_connection(void* arg) {
 
         pthread_mutex_lock(&g_system_mutex);
         
-        if (g_num_servers < MAX_SERVERS) {
+        // Check if this SS was previously registered (reconnection scenario)
+        int existing_ss_index = -1;
+        for (int i = 0; i < g_num_servers; i++) {
+            if (server_list[i].ss_nm_port == ss_nm_port && 
+                strcmp(server_list[i].ss_ip_addr, peer_ip) == 0) {
+                existing_ss_index = i;
+                break;
+            }
+        }
+        
+        if (existing_ss_index >= 0) {
+            // SS is reconnecting - mark as online and update heartbeat
+            StorageServer* ss = &server_list[existing_ss_index];
+            ss->is_online = 1;
+            ss->last_heartbeat = time(NULL);
+            ss->ss_client_port = ss_client_port; // Update client port in case it changed
+            
+            printf("  SS%d reconnected (NM Port %d, Client Port %d)\n", existing_ss_index, ss_nm_port, ss_client_port);
+            log_to_file(client_addr_str, "StorageServer", "INFO: SS%d reconnected. Triggering resync...", existing_ss_index);
+            
+            // TODO: Trigger resync from replica SS
+            // For now, we'll just mark it as online and let replication continue
+            // In a full implementation, we would copy all files from replica_of SS
+            
+        } else if (g_num_servers < MAX_SERVERS) {
+            int ss_index = g_num_servers;
             StorageServer* new_ss = &server_list[g_num_servers++];
             new_ss->ss_nm_port = ss_nm_port;
             new_ss->ss_client_port = ss_client_port;
             strncpy(new_ss->ss_ip_addr, peer_ip, INET_ADDRSTRLEN);
-            printf("  Registered SS (NM Port %d, Client Port %d)\n", ss_nm_port, ss_client_port);
-            log_to_file(client_addr_str, "StorageServer", "INFO: Registered SS (NM Port %d, Client Port %d)", ss_nm_port, ss_client_port);
+            
+            // Initialize fault tolerance fields
+            new_ss->is_online = 1;
+            new_ss->last_heartbeat = time(NULL);
+            new_ss->replica_of = -1;
+            new_ss->replicated_by = -1;
+            
+            // Set up replication pairs: odd-numbered SS replicates even-numbered SS
+            if (ss_index % 2 == 1 && ss_index > 0) {
+                // This is odd-numbered, replicate the previous even-numbered
+                new_ss->replica_of = ss_index - 1;
+                server_list[ss_index - 1].replicated_by = ss_index;
+                printf("  SS%d will replicate SS%d\n", ss_index, ss_index - 1);
+                log_to_file(client_addr_str, "StorageServer", "INFO: SS%d will replicate SS%d", ss_index, ss_index - 1);
+            }
+            
+            printf("  Registered SS%d (NM Port %d, Client Port %d)\n", ss_index, ss_nm_port, ss_client_port);
+            log_to_file(client_addr_str, "StorageServer", "INFO: Registered SS%d (NM Port %d, Client Port %d)", ss_index, ss_nm_port, ss_client_port);
         }
 
         while ((token = strtok_r(NULL, " \n", &rest)) != NULL) {
@@ -745,6 +839,42 @@ void* handle_connection(void* arg) {
         printf("Storage Server registration complete. Connection closed.\n");
         log_to_file(client_addr_str, "StorageServer", "INFO: Registration complete. Connection closed.");
         return NULL; 
+        
+    } else if (strncmp(buffer, "HEARTBEAT", 9) == 0) {
+        // Heartbeat from Storage Server
+        int ss_nm_port;
+        if (sscanf(buffer, "HEARTBEAT %d", &ss_nm_port) != 1) {
+            printf("  Failed to parse HEARTBEAT message.\n");
+            log_to_file(client_addr_str, "StorageServer", "ERROR: Failed to parse HEARTBEAT.");
+            close(client_socket);
+            return NULL;
+        }
+        
+        pthread_mutex_lock(&g_system_mutex);
+        
+        // Find the SS by port and update heartbeat
+        int found = 0;
+        for (int i = 0; i < g_num_servers; i++) {
+            if (server_list[i].ss_nm_port == ss_nm_port) {
+                server_list[i].last_heartbeat = time(NULL);
+                server_list[i].is_online = 1;
+                found = 1;
+                break;
+            }
+        }
+        
+        pthread_mutex_unlock(&g_system_mutex);
+        
+        if (found) {
+            send(client_socket, "ACK\n", 4, 0);
+        } else {
+            printf("  HEARTBEAT from unknown SS (port %d)\n", ss_nm_port);
+            log_to_file(client_addr_str, "StorageServer", "WARNING: HEARTBEAT from unknown SS (port %d)", ss_nm_port);
+            send(client_socket, "ERR Unknown SS\n", 15, 0);
+        }
+        
+        close(client_socket);
+        return NULL;
         
     } else if (strncmp(buffer, "REGISTER_CLIENT", 15) == 0) {
         char username[256]; 
@@ -1056,6 +1186,29 @@ void* handle_connection(void* arg) {
                         permitted = 1;
                         strncpy(ss_ip, file->ss_ip_addr, INET_ADDRSTRLEN);
                         ss_port = file->ss_client_port;
+                        
+                        // Check if primary SS is online, if not use replica
+                        int primary_ss_index = -1;
+                        for (int j = 0; j < g_num_servers; j++) {
+                            if (strcmp(server_list[j].ss_ip_addr, file->ss_ip_addr) == 0 &&
+                                server_list[j].ss_client_port == file->ss_client_port) {
+                                primary_ss_index = j;
+                                break;
+                            }
+                        }
+                        
+                        if (primary_ss_index >= 0 && !server_list[primary_ss_index].is_online) {
+                            // Primary is offline, try to use replica
+                            int replica_index = server_list[primary_ss_index].replicated_by;
+                            if (replica_index >= 0 && replica_index < g_num_servers && 
+                                server_list[replica_index].is_online) {
+                                strncpy(ss_ip, server_list[replica_index].ss_ip_addr, INET_ADDRSTRLEN);
+                                ss_port = server_list[replica_index].ss_client_port;
+                                printf("  Primary SS offline, using replica SS%d\n", replica_index);
+                                log_to_file(client_addr_str, username, "INFO: Primary SS offline, using replica SS%d for READ", replica_index);
+                            }
+                        }
+                        
                         get_current_timestamp(file->last_accessed_ts, 128);
                         strncpy(file->last_accessed_by, username, 255);
                         
@@ -1119,6 +1272,29 @@ void* handle_connection(void* arg) {
                         permitted = 1;
                         strncpy(ss_ip, file->ss_ip_addr, INET_ADDRSTRLEN);
                         ss_port = file->ss_client_port;
+                        
+                        // Check if primary SS is online, if not use replica
+                        int primary_ss_index = -1;
+                        for (int j = 0; j < g_num_servers; j++) {
+                            if (strcmp(server_list[j].ss_ip_addr, file->ss_ip_addr) == 0 &&
+                                server_list[j].ss_client_port == file->ss_client_port) {
+                                primary_ss_index = j;
+                                break;
+                            }
+                        }
+                        
+                        if (primary_ss_index >= 0 && !server_list[primary_ss_index].is_online) {
+                            // Primary is offline, try to use replica
+                            int replica_index = server_list[primary_ss_index].replicated_by;
+                            if (replica_index >= 0 && replica_index < g_num_servers && 
+                                server_list[replica_index].is_online) {
+                                strncpy(ss_ip, server_list[replica_index].ss_ip_addr, INET_ADDRSTRLEN);
+                                ss_port = server_list[replica_index].ss_client_port;
+                                printf("  Primary SS offline, using replica SS%d\n", replica_index);
+                                log_to_file(client_addr_str, username, "INFO: Primary SS offline, using replica SS%d for STREAM", replica_index);
+                            }
+                        }
+                        
                         get_current_timestamp(file->last_accessed_ts, 128);
                         strncpy(file->last_accessed_by, username, 255);
                         
@@ -1185,12 +1361,24 @@ void* handle_connection(void* arg) {
                     continue;
                 }
 
+                // Round-robin distribution: select next available SS
+                int selected_ss = g_next_ss_for_file;
+                g_next_ss_for_file = (g_next_ss_for_file + 1) % g_num_servers;
+                
                 char ss_ip[INET_ADDRSTRLEN];
-                int ss_nm_port = server_list[0].ss_nm_port;
-                strncpy(ss_ip, server_list[0].ss_ip_addr, INET_ADDRSTRLEN);
+                int ss_nm_port = server_list[selected_ss].ss_nm_port;
+                strncpy(ss_ip, server_list[selected_ss].ss_ip_addr, INET_ADDRSTRLEN);
+                
+                printf("  Assigning folder '%s' to SS%d (Round-robin)\n", foldername, selected_ss);
+                log_to_file(client_addr_str, username, "INFO: Assigning folder '%s' to SS%d (Round-robin)", foldername, selected_ss);
                 
                 pthread_mutex_unlock(&g_system_mutex);
                 int result = forward_create_folder_to_ss(ss_ip, ss_nm_port, folder_path);
+                
+                // Replicate to backup SS asynchronously
+                char repl_cmd[BUFFER_SIZE];
+                snprintf(repl_cmd, sizeof(repl_cmd), "CREATE_FOLDER %s\n", folder_path);
+                replicate_to_backup_ss(selected_ss, repl_cmd);
 
                 if (result == 0) {
                     pthread_mutex_lock(&g_system_mutex);
@@ -1309,12 +1497,14 @@ void* handle_connection(void* arg) {
 
                 char ss_ip[INET_ADDRSTRLEN];
                 int ss_nm_port = -1;
+                int ss_index = -1;
                 for (int j = 0; j < g_num_servers; j++) {
                     if (strcmp(server_list[j].ss_ip_addr, file->ss_ip_addr) == 0 &&
                         server_list[j].ss_client_port == file->ss_client_port) 
                     {
                         strncpy(ss_ip, server_list[j].ss_ip_addr, INET_ADDRSTRLEN);
                         ss_nm_port = server_list[j].ss_nm_port;
+                        ss_index = j;
                         break;
                     }
                 }
@@ -1329,6 +1519,13 @@ void* handle_connection(void* arg) {
                 }
 
                 int result = forward_move_to_ss(ss_ip, ss_nm_port, filename, folder_path);
+                
+                // Replicate to backup SS asynchronously
+                if (ss_index >= 0) {
+                    char repl_cmd[BUFFER_SIZE];
+                    snprintf(repl_cmd, sizeof(repl_cmd), "MOVE_FILE %s %s\n", filename, folder_path);
+                    replicate_to_backup_ss(ss_index, repl_cmd);
+                }
 
                 if (result == 0) {
                     pthread_mutex_lock(&g_system_mutex);
@@ -1378,13 +1575,25 @@ void* handle_connection(void* arg) {
                     continue;
                 }
 
+                // Round-robin distribution: select next available SS
+                int selected_ss = g_next_ss_for_file;
+                g_next_ss_for_file = (g_next_ss_for_file + 1) % g_num_servers;
+                
                 char ss_ip[INET_ADDRSTRLEN];
-                int ss_nm_port = server_list[0].ss_nm_port;
-                int ss_client_port = server_list[0].ss_client_port;
-                strncpy(ss_ip, server_list[0].ss_ip_addr, INET_ADDRSTRLEN);
+                int ss_nm_port = server_list[selected_ss].ss_nm_port;
+                int ss_client_port = server_list[selected_ss].ss_client_port;
+                strncpy(ss_ip, server_list[selected_ss].ss_ip_addr, INET_ADDRSTRLEN);
+                
+                printf("  Assigning '%s' to SS%d (Round-robin)\n", filename, selected_ss);
+                log_to_file(client_addr_str, username, "INFO: Assigning '%s' to SS%d (Round-robin)", filename, selected_ss);
                 
                 pthread_mutex_unlock(&g_system_mutex);
                 int result = forward_create_to_ss(ss_ip, ss_nm_port, filename);
+                
+                // Replicate to backup SS asynchronously
+                char repl_cmd[BUFFER_SIZE];
+                snprintf(repl_cmd, sizeof(repl_cmd), "CREATE_FILE %s\n", filename);
+                replicate_to_backup_ss(selected_ss, repl_cmd);
 
                 if (result == 0) {
                     FileLocation new_file;
@@ -1423,6 +1632,7 @@ void* handle_connection(void* arg) {
 
                 char ss_ip[INET_ADDRSTRLEN];
                 int ss_nm_port = -1;
+                int ss_index = -1;
                 int permitted = 0; 
                 FileLocation* file = NULL;
 
@@ -1439,6 +1649,7 @@ void* handle_connection(void* arg) {
                             {
                                 strncpy(ss_ip, server_list[j].ss_ip_addr, INET_ADDRSTRLEN);
                                 ss_nm_port = server_list[j].ss_nm_port;
+                                ss_index = j;
                                 break;
                             }
                         }
@@ -1469,6 +1680,13 @@ void* handle_connection(void* arg) {
                 }
 
                 int result = forward_delete_to_ss(ss_ip, ss_nm_port, filename);
+                
+                // Replicate delete to backup SS asynchronously
+                if (ss_index >= 0) {
+                    char repl_cmd[BUFFER_SIZE];
+                    snprintf(repl_cmd, sizeof(repl_cmd), "DELETE_FILE %s\n", filename);
+                    replicate_to_backup_ss(ss_index, repl_cmd);
+                }
 
                 if (result == 0) {
                     pthread_mutex_lock(&g_system_mutex);
@@ -1939,6 +2157,28 @@ void* handle_connection(void* arg) {
                             
                             strncpy(ss_ip, file->ss_ip_addr, INET_ADDRSTRLEN);
                             ss_port = file->ss_client_port;
+                            
+                            // Check if primary SS is online, if not use replica
+                            int primary_ss_index = -1;
+                            for (int j = 0; j < g_num_servers; j++) {
+                                if (strcmp(server_list[j].ss_ip_addr, file->ss_ip_addr) == 0 &&
+                                    server_list[j].ss_client_port == file->ss_client_port) {
+                                    primary_ss_index = j;
+                                    break;
+                                }
+                            }
+                            
+                            if (primary_ss_index >= 0 && !server_list[primary_ss_index].is_online) {
+                                // Primary is offline, try to use replica
+                                int replica_index = server_list[primary_ss_index].replicated_by;
+                                if (replica_index >= 0 && replica_index < g_num_servers && 
+                                    server_list[replica_index].is_online) {
+                                    strncpy(ss_ip, server_list[replica_index].ss_ip_addr, INET_ADDRSTRLEN);
+                                    ss_port = server_list[replica_index].ss_client_port;
+                                    printf("  Primary SS offline, using replica SS%d\n", replica_index);
+                                    log_to_file(client_addr_str, username, "INFO: Primary SS offline, using replica SS%d for WRITE", replica_index);
+                                }
+                            }
                             
                             // Build full file path including folder for SS
                             if (strlen(file->folder_path) > 0 && strcmp(file->folder_path, "/") != 0) {
@@ -2458,6 +2698,38 @@ void* handle_connection(void* arg) {
 }
 
 /*
+ * --- Heartbeat Monitoring Thread ---
+ */
+void* monitor_heartbeats(void* arg) {
+    (void)arg;
+    
+    while (1) {
+        sleep(HEARTBEAT_INTERVAL);
+        
+        pthread_mutex_lock(&g_system_mutex);
+        time_t current_time = time(NULL);
+        
+        for (int i = 0; i < g_num_servers; i++) {
+            StorageServer* ss = &server_list[i];
+            if (ss->is_online) {
+                if (current_time - ss->last_heartbeat > HEARTBEAT_TIMEOUT) {
+                    ss->is_online = 0;
+                    printf("SS%d marked as OFFLINE (no heartbeat for %ld seconds)\n", 
+                           i, current_time - ss->last_heartbeat);
+                    log_to_file("Internal", "NameServer", 
+                                "WARNING: SS%d marked OFFLINE (no heartbeat for %ld seconds)", 
+                                i, current_time - ss->last_heartbeat);
+                }
+            }
+        }
+        
+        pthread_mutex_unlock(&g_system_mutex);
+    }
+    
+    return NULL;
+}
+
+/*
  * --- Main Server Function ---
  */
 int main() {
@@ -2472,6 +2744,17 @@ int main() {
     }
 
     load_registry_from_disk(); // Load persistent data
+    
+    // Start heartbeat monitoring thread
+    pthread_t heartbeat_thread;
+    if (pthread_create(&heartbeat_thread, NULL, monitor_heartbeats, NULL) != 0) {
+        perror("pthread_create for heartbeat monitor failed");
+        log_to_file("Internal", "NameServer", "ERROR: pthread_create for heartbeat monitor failed: %m");
+        exit(EXIT_FAILURE);
+    }
+    pthread_detach(heartbeat_thread);
+    printf("Heartbeat monitoring thread started\n");
+    log_to_file("Internal", "NameServer", "INFO: Heartbeat monitoring thread started");
     
     int server_fd;
     struct sockaddr_in server_addr, client_addr;
@@ -2520,8 +2803,8 @@ int main() {
 
         char client_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
-        printf("Accepted new connection from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
-        // Note: We log the connection *inside* handle_connection once we know the type (SS or Client)
+        // Don't print here - let handle_connection print based on connection type
+        // (to avoid spam from heartbeats)
 
         pthread_t thread_id;
         int* p_client_socket = malloc(sizeof(int));

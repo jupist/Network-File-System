@@ -1,0 +1,9 @@
+SS (NM-Server): bind failed: Address already in use
+SS (Client-Server): bind failed: Address already in use
+SS: Connected to Name Server.
+SS: Sent registration message:
+REGISTER_SS 9001 9002 wowee.txt nuh_uh.txt
+SS: Registration complete.
+SS: Heartbeat thread started
+SS: Starting NM-facing server on port 9001
+SS: Starting client-facing server on port 9002

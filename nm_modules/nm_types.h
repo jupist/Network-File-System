@@ -2,6 +2,7 @@
 #define NM_TYPES_H
 
 #include <arpa/inet.h>
+#include <time.h>
 #include "../common.h"
 
 /*
@@ -33,6 +34,10 @@ typedef struct {
     int ss_nm_port;          
     int ss_client_port;      
     char ss_ip_addr[INET_ADDRSTRLEN];
+    int is_online;              // 1 if online, 0 if failed
+    time_t last_heartbeat;      // Timestamp of last heartbeat
+    int replica_of;             // Index of SS this replicates (-1 if primary)
+    int replicated_by;          // Index of SS that replicates this (-1 if none)
 } StorageServer;
 
 typedef struct {
@@ -95,6 +100,8 @@ typedef struct CacheMapEntry {
 #define MAX_LOCKS 50
 #define MAX_FOLDERS 200
 #define MAX_ACCESS_REQUESTS 100
+#define HEARTBEAT_TIMEOUT 30  // Seconds before SS considered failed
+#define HEARTBEAT_INTERVAL 10 // Seconds between heartbeats from SS
 #define EXEC_OUTPUT_BUFFER_SIZE 8192 
 #define NM_REGISTRY_FILE "nm_registry.dat"
 #define NM_LOG_FILE "nameserver.log"

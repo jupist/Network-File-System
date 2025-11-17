@@ -14,10 +14,10 @@ typedef struct WordNode {
     struct WordNode* next_sentence;
 } WordNode;
 
-// Storage Server Configuration
-#define SS_NM_PORT 9001       // Port for NM to connect to
-#define SS_CLIENT_PORT 9002   // Port for Clients to connect to
-#define SS_STORAGE_DIR "ss_storage/"
+// Storage Server Configuration (declared in storageserver.c)
+extern int SS_NM_PORT;         // Port for NM to connect to
+extern int SS_CLIENT_PORT;     // Port for Clients to connect to
+extern char SS_STORAGE_DIR[];  // Storage directory
 #define SS_LOG_FILE "storageserver.log"
 
 #endif // SS_TYPES_H
