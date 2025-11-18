@@ -180,6 +180,62 @@ int forward_delete_to_ss(const char* ss_ip, int ss_nm_port, const char* filename
 }
 
 /*
+ * Select storage servers for file creation (1 or 2 based on availability).
+ * Returns the number of servers selected (1 or 2), or 0 if no servers available.
+ * primary_ss is always set if return > 0, secondary_ss is set only if return == 2.
+ */
+int select_storage_servers(int* primary_ss, int* secondary_ss) {
+    // Count online servers
+    int online_servers[MAX_SERVERS];
+    int online_count = 0;
+    
+    for (int i = 0; i < g_num_servers; i++) {
+        if (server_list[i].is_online) {
+            online_servers[online_count++] = i;
+        }
+    }
+    
+    if (online_count == 0) {
+        return 0; // No servers available
+    }
+    
+    // Select primary server using round-robin
+    *primary_ss = online_servers[g_next_ss_for_file % online_count];
+    g_next_ss_for_file = (g_next_ss_for_file + 1) % online_count;
+    
+    if (online_count == 1) {
+        // Only one server available, no replication possible
+        *secondary_ss = -1;
+        return 1;
+    }
+    
+    // Select secondary server (different from primary)
+    int secondary_idx = (g_next_ss_for_file + online_count / 2) % online_count;
+    if (online_servers[secondary_idx] == *primary_ss) {
+        secondary_idx = (secondary_idx + 1) % online_count;
+    }
+    *secondary_ss = online_servers[secondary_idx];
+    
+    return 2; // Two servers selected for replication
+}
+
+/*
+ * Synchronously create a file on a specific storage server.
+ * Returns 0 on success, -1 on failure.
+ */
+int create_file_on_ss(int ss_index, const char* filename) {
+    if (ss_index < 0 || ss_index >= g_num_servers || !server_list[ss_index].is_online) {
+        return -1;
+    }
+    
+    char ss_ip[INET_ADDRSTRLEN];
+    int ss_nm_port = server_list[ss_index].ss_nm_port;
+    strncpy(ss_ip, server_list[ss_index].ss_ip_addr, INET_ADDRSTRLEN);
+    
+    return forward_create_to_ss(ss_ip, ss_nm_port, filename);
+}
+
+/*
  * Asynchronously replicate a command to the replica SS (if it exists and is online).
  * This function sends the command but does not wait for a response.
  */
@@ -272,6 +328,40 @@ int get_file_content_from_ss(const char* ss_ip, int ss_client_port, const char* 
     close(ss_sock);
     
     return (bytes_read < 0) ? -1 : 0;
+}
+
+/*
+ * Validate if a sentence index is valid for writing.
+ * Checks if previous sentences are properly terminated with '.', '?', or '!'.
+ * Returns 0 if valid, -1 if invalid (sentence index out of bounds).
+ */
+int validate_sentence_index(const char* ss_ip, int ss_client_port, const char* filename, int target_sentence) {
+    if (target_sentence <= 1) {
+        return 0; // Sentence 1 is always valid
+    }
+    
+    char file_content[BUFFER_SIZE];
+    if (get_file_content_from_ss(ss_ip, ss_client_port, filename, file_content, sizeof(file_content)) != 0) {
+        return -1; // Could not get file content
+    }
+    
+    // Count sentences by counting sentence terminators
+    int sentence_count = 0;
+    int len = strlen(file_content);
+    
+    for (int i = 0; i < len; i++) {
+        if (file_content[i] == '.' || file_content[i] == '?' || file_content[i] == '!') {
+            sentence_count++;
+        }
+    }
+    
+    // Check if we can write to target_sentence
+    // We can write to sentence N if sentence N-1 is properly terminated
+    if (target_sentence <= sentence_count + 1) {
+        return 0; // Valid
+    } else {
+        return -1; // Out of bounds - previous sentence not terminated
+    }
 }
 
 /*
@@ -1866,56 +1956,107 @@ void* handle_connection(void* arg) {
                     continue;
                 }
 
-                if (g_num_servers == 0) {
+                // Select storage servers (1 or 2 based on availability)
+                int primary_ss, secondary_ss;
+                int server_count = select_storage_servers(&primary_ss, &secondary_ss);
+                if (server_count == 0) {
                     pthread_mutex_unlock(&g_system_mutex);
                     log_to_file(client_addr_str, username, "RES: CREATE for '%s' failed: No Storage Servers available.", filename);
                     snprintf(err_msg, sizeof(err_msg), "ERROR %d: No Storage Servers available.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                     continue;
                 }
-
-                // Round-robin distribution: select next available SS
-                int selected_ss = g_next_ss_for_file;
-                g_next_ss_for_file = (g_next_ss_for_file + 1) % g_num_servers;
                 
-                char ss_ip[INET_ADDRSTRLEN];
-                int ss_nm_port = server_list[selected_ss].ss_nm_port;
-                int ss_client_port = server_list[selected_ss].ss_client_port;
-                strncpy(ss_ip, server_list[selected_ss].ss_ip_addr, INET_ADDRSTRLEN);
-                
-                printf("  Assigning '%s' to SS%d (Round-robin)\n", filename, selected_ss);
-                log_to_file(client_addr_str, username, "INFO: Assigning '%s' to SS%d (Round-robin)", filename, selected_ss);
+                if (server_count == 2) {
+                    printf("  Assigning '%s' to SS%d (primary) and SS%d (secondary) for replication\n", 
+                           filename, primary_ss, secondary_ss);
+                    log_to_file(client_addr_str, username, "INFO: Assigning '%s' to SS%d (primary) and SS%d (secondary)", 
+                               filename, primary_ss, secondary_ss);
+                } else {
+                    printf("  Assigning '%s' to SS%d (single server, no replication)\n", 
+                           filename, primary_ss);
+                    log_to_file(client_addr_str, username, "INFO: Assigning '%s' to SS%d (single server, no replication)", 
+                               filename, primary_ss);
+                }
                 
                 pthread_mutex_unlock(&g_system_mutex);
-                int result = forward_create_to_ss(ss_ip, ss_nm_port, filename);
                 
-                // Replicate to backup SS asynchronously
-                char repl_cmd[BUFFER_SIZE];
-                snprintf(repl_cmd, sizeof(repl_cmd), "CREATE_FILE %s\n", filename);
-                replicate_to_backup_ss(selected_ss, repl_cmd);
+                // Create file on primary storage server
+                int primary_result = create_file_on_ss(primary_ss, filename);
+                
+                // Create file on secondary storage server (if available)
+                int secondary_result = 0; // Success by default if no secondary server
+                if (server_count == 2) {
+                    secondary_result = create_file_on_ss(secondary_ss, filename);
+                    if (secondary_result != 0) {
+                        printf("  WARNING: Failed to create '%s' on secondary server SS%d\n", 
+                               filename, secondary_ss);
+                        log_to_file(client_addr_str, username, 
+                                   "WARNING: Failed to create '%s' on secondary server SS%d", 
+                                   filename, secondary_ss);
+                    }
+                }
+                
+                // Primary server must succeed; secondary is optional
+                int overall_result = primary_result;
 
-                if (result == 0) {
+                if (overall_result == 0) {
                     FileLocation new_file;
                     strncpy(new_file.filename, filename, 255);
-                    new_file.ss_client_port = ss_client_port;
-                    strncpy(new_file.ss_ip_addr, ss_ip, INET_ADDRSTRLEN);
+                    
+                    // Primary storage server info
+                    new_file.ss_client_port = server_list[primary_ss].ss_client_port;
+                    strncpy(new_file.ss_ip_addr, server_list[primary_ss].ss_ip_addr, INET_ADDRSTRLEN);
+                    new_file.ss_index = primary_ss;
+                    
+                    // Secondary storage server info (if available)
+                    if (server_count == 2 && secondary_result == 0) {
+                        new_file.ss2_client_port = server_list[secondary_ss].ss_client_port;
+                        strncpy(new_file.ss2_ip_addr, server_list[secondary_ss].ss_ip_addr, INET_ADDRSTRLEN);
+                        new_file.ss2_index = secondary_ss;
+                    } else {
+                        // No secondary server or secondary creation failed
+                        new_file.ss2_client_port = 0;
+                        memset(new_file.ss2_ip_addr, 0, sizeof(new_file.ss2_ip_addr));
+                        new_file.ss2_index = -1;
+                    }
+                    
                     strncpy(new_file.owner_username, username, 255); 
                     new_file.num_permissions = 0; 
                     strncpy(new_file.last_accessed_by, "N/A", 255);
                     strncpy(new_file.last_accessed_ts, "N/A", 127);
                     strncpy(new_file.folder_path, "/", 511); // Root folder by default
-                    new_file.ss_index = selected_ss; // Track which SS owns this file
                     
                     pthread_mutex_lock(&g_system_mutex);
                     hash_map_insert_unsafe(new_file);
                     save_registry_to_disk_unsafe(); // Save persistence
                     pthread_mutex_unlock(&g_system_mutex);
 
-                    printf("  Successfully registered new file '%s' for owner '%s'\n", filename, username);
-                    log_to_file(client_addr_str, username, "RES: CREATE for '%s' success.", filename);
-                    write(client_socket, "File created successfully.\n", sizeof("File created successfully.\n") - 1);
+                    if (server_count == 2 && secondary_result == 0) {
+                        printf("  Successfully registered new file '%s' for owner '%s' on SS%d and SS%d\n", 
+                               filename, username, primary_ss, secondary_ss);
+                        log_to_file(client_addr_str, username, "RES: CREATE for '%s' success on SS%d and SS%d.", 
+                                   filename, primary_ss, secondary_ss);
+                        write(client_socket, "File created successfully.\n", 
+                              sizeof("File created successfully.\n") - 1);
+                    } else if (server_count == 1) {
+                        printf("  Successfully registered new file '%s' for owner '%s' on SS%d (no replication)\n", 
+                               filename, username, primary_ss);
+                        log_to_file(client_addr_str, username, "RES: CREATE for '%s' success on SS%d (no replication).", 
+                                   filename, primary_ss);
+                        write(client_socket, "File created successfully.\n", 
+                              sizeof("File created successfully.\n") - 1);
+                    } else {
+                        printf("  Successfully registered new file '%s' for owner '%s' on SS%d (secondary failed)\n", 
+                               filename, username, primary_ss);
+                        log_to_file(client_addr_str, username, "RES: CREATE for '%s' success on SS%d (secondary failed).", 
+                                   filename, primary_ss);
+                        write(client_socket, "File created successfully.\n", 
+                              sizeof("File created successfully.\n") - 1);
+                    }
                 } else {
-                    log_to_file(client_addr_str, username, "RES: CREATE for '%s' failed: SS failed to create file.", filename);
+                    // Primary server failed - operation fails
+                    log_to_file(client_addr_str, username, "RES: CREATE for '%s' failed: Primary storage server failed.", filename);
                     snprintf(err_msg, sizeof(err_msg), "ERROR %d: Storage Server failed to create file.\n", ERROR_SERVER_ERROR);
                     write(client_socket, err_msg, strlen(err_msg));
                 }
@@ -1932,7 +2073,6 @@ void* handle_connection(void* arg) {
 
                 char ss_ip[INET_ADDRSTRLEN];
                 int ss_nm_port = -1;
-                int ss_index = -1;
                 int permitted = 0; 
                 FileLocation* file = NULL;
                 char base_filename[256];
@@ -1952,7 +2092,6 @@ void* handle_connection(void* arg) {
                             {
                                 strncpy(ss_ip, server_list[j].ss_ip_addr, INET_ADDRSTRLEN);
                                 ss_nm_port = server_list[j].ss_nm_port;
-                                ss_index = j;
                                 break;
                             }
                         }
@@ -1982,14 +2121,29 @@ void* handle_connection(void* arg) {
                     continue;
                 }
 
-                int result = forward_delete_to_ss(ss_ip, ss_nm_port, filename);
+                // Delete from primary server
+                int primary_result = forward_delete_to_ss(ss_ip, ss_nm_port, filename);
                 
-                // Replicate delete to backup SS asynchronously
-                if (ss_index >= 0) {
-                    char repl_cmd[BUFFER_SIZE];
-                    snprintf(repl_cmd, sizeof(repl_cmd), "DELETE_FILE %s\n", filename);
-                    replicate_to_backup_ss(ss_index, repl_cmd);
+                // Delete from secondary server if it exists
+                int secondary_result = 0;
+                if (file->ss2_index >= 0 && file->ss2_index < g_num_servers) {
+                    char ss2_ip[INET_ADDRSTRLEN];
+                    int ss2_nm_port = server_list[file->ss2_index].ss_nm_port;
+                    strncpy(ss2_ip, file->ss2_ip_addr, INET_ADDRSTRLEN);
+                    
+                    secondary_result = forward_delete_to_ss(ss2_ip, ss2_nm_port, filename);
+                    
+                    if (secondary_result != 0) {
+                        printf("  WARNING: Failed to delete '%s' from secondary server SS%d\n", 
+                               filename, file->ss2_index);
+                        log_to_file(client_addr_str, username, 
+                                   "WARNING: Failed to delete '%s' from secondary server SS%d", 
+                                   filename, file->ss2_index);
+                    }
                 }
+                
+                // Consider operation successful if primary deletion succeeded
+                int result = primary_result;
 
                 if (result == 0) {
                     pthread_mutex_lock(&g_system_mutex);
@@ -2512,6 +2666,22 @@ void* handle_connection(void* arg) {
                     if (check_permission(file, username, 'W')) {
                         permitted = 1;
                         
+                        // Validate sentence index before proceeding with locking
+                        strncpy(ss_ip, file->ss_ip_addr, INET_ADDRSTRLEN);
+                        ss_port = file->ss_client_port;
+                        
+                        pthread_mutex_unlock(&g_system_mutex);
+                        int sentence_valid = validate_sentence_index(ss_ip, ss_port, filename, sentence_num);
+                        pthread_mutex_lock(&g_system_mutex);
+                        
+                        if (sentence_valid != 0) {
+                            pthread_mutex_unlock(&g_system_mutex);
+                            log_to_file(client_addr_str, username, "RES: WRITE for '%s' sentence %d failed: Sentence index out of bounds.", filename, sentence_num);
+                            snprintf(err_msg, sizeof(err_msg), "ERROR %d: Sentence index out of bounds.\n", ERROR_INVALID_INDEX);
+                            write(client_socket, err_msg, strlen(err_msg));
+                            continue;
+                        }
+                        
                         for (int j = 0; j < g_num_locks; j++) {
                             if (strcmp(g_file_locks[j].filename, base_filename) == 0 && g_file_locks[j].sentence_num == sentence_num) {
                                 already_locked = 1;
@@ -2525,9 +2695,6 @@ void* handle_connection(void* arg) {
                             strncpy(new_lock->filename, base_filename, 255);
                             strncpy(new_lock->username, username, 255);
                             new_lock->sentence_num = sentence_num;
-                            
-                            strncpy(ss_ip, file->ss_ip_addr, INET_ADDRSTRLEN);
-                            ss_port = file->ss_client_port;
                             
                             // Check if primary SS is online, if not use replica
                             int primary_ss_index = -1;

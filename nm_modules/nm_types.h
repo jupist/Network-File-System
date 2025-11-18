@@ -26,9 +26,15 @@ typedef struct {
     char last_accessed_by[256]; 
     char last_accessed_ts[128]; 
 
+    // Primary storage server
     int ss_client_port;      
     char ss_ip_addr[INET_ADDRSTRLEN];
     int ss_index;                // Index of primary SS that owns this file
+    
+    // Secondary storage server (for replication)
+    int ss2_client_port;
+    char ss2_ip_addr[INET_ADDRSTRLEN];
+    int ss2_index;               // Index of secondary SS that also stores this file
 } FileLocation;
 
 typedef struct {

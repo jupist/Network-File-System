@@ -25,6 +25,22 @@ The system consists of three main components:
 2. **Storage Servers** - Handle actual file storage and operations (supports multiple instances)
 3. **Client** - User interface for interacting with the file system
 
+### File Replication Strategy
+
+**Automatic Dual-Server Storage**: When files are created, the system automatically stores them on **two different storage servers** for redundancy and fault tolerance:
+
+- **2+ Storage Servers Available**: Files are replicated across two servers using round-robin selection
+- **1 Storage Server Available**: Files are stored on the single available server (no replication)
+- **Load Balancing**: Distribution algorithm ensures even load across all available servers
+- **Transparency**: Users don't see replication details - all operations appear seamless
+
+### Indexing Convention
+
+**Important**: All indexing in this system is **0-based**:
+- **Sentence Numbers**: Start from 0 (first sentence is sentence 0)
+- **Word Positions**: Start from 0 (first word in a sentence is position 0)
+- **File Operations**: All commands use 0-based indexing for consistency
+
 ---
 
 ## Getting Started
@@ -52,6 +68,25 @@ The system consists of three main components:
    ```
    You will be prompted to enter your username.
 
+### Client Interface
+
+The client provides a user-friendly command prompt interface:
+
+**Prompt Format:**
+```
+Docs++ <username> > 
+```
+**Example:**
+```
+Docs++ Alice > CREATE myfile.txt
+Docs++ Bob > READ document.txt
+```
+
+**Error Handling:**
+- Clear error messages with HTTP-style status codes (400, 404, 403, etc.)
+- Automatic validation of command syntax and parameters
+- Intelligent error recovery (e.g., won't start write sessions on errors)
+
 ---
 
 ## Command Reference
@@ -69,12 +104,19 @@ CREATE <filename>
 **Example:**
 ```
 CREATE myfile.txt
+CREATE documents/report.txt
 ```
 
+**Replication Behavior:**
+- **2+ Storage Servers**: File is automatically replicated to two different servers
+- **1 Storage Server**: File is stored on the single available server
+- **Server Selection**: Uses intelligent round-robin algorithm for load balancing
+
 **Notes:**
-- Files are automatically assigned to a storage server using round-robin distribution
+- Files are automatically assigned using round-robin distribution across available servers
 - The owner is automatically set to the user creating the file
 - Creates an empty file initially
+- All replication is transparent to the user
 
 ---
 
@@ -92,9 +134,14 @@ DELETE myfile.txt
 DELETE docs/report.txt
 ```
 
+**Replication Handling:**
+- Automatically removes file from **both storage servers** if replicated
+- If secondary server deletion fails, operation still succeeds (primary deletion successful)
+- Metadata is completely removed from the name server
+
 **Notes:**
 - Only the file owner can delete a file
-- Permanently removes the file from storage and metadata
+- Permanently removes the file from all storage locations and metadata
 
 ---
 
@@ -139,7 +186,7 @@ STREAM myfile.txt
 ---
 
 #### **WRITE**
-Write or modify a specific sentence in a file. (Both sentence and word indexes should be 0-indexed)
+Write or modify a specific sentence in a file.
 
 **Syntax:**
 ```
@@ -148,20 +195,27 @@ WRITE <filename> <sentence_number>
 
 **Example:**
 ```
-WRITE myfile.txt 1
-WRITE report.txt 3
+WRITE myfile.txt 0      # Edit first sentence
+WRITE report.txt 2      # Edit third sentence
 ```
 
 **Flow:**
-1. System grants you a lock on the specified sentence
-2. Client prompts you to enter the in the sentence based on word index specified
-3. After writing, the lock is automatically released
+1. System validates sentence index (must be sequential)
+2. System grants you a lock on the specified sentence
+3. Client prompts you to enter words at specific positions
+4. After writing, the lock is automatically released
+
+**Sequential Writing Rule:**
+- You can only write to sentence N if sentence N-1 is properly terminated with `.`, `?`, or `!`
+- Example: Cannot write sentence 2 until sentence 1 ends with proper punctuation
+- Error: `ERROR 400: Sentence index out of bounds.` if rule is violated
 
 **Notes:**
 - Requires WRITE permission
-- Sentence and word indexes are 0-indexed
+- **Sentence and word indexes are 0-indexed** (first sentence is 0, first word is 0)
 - System prevents concurrent edits to the same sentence
 - Updates "Last Accessed" information
+- If multiple storage servers exist, changes are replicated automatically
 
 ---
 
@@ -582,10 +636,13 @@ INFO myfile.txt
 
 ## Features
 
-### Fault Tolerance
-- **Storage Server Replication** - Each storage server has a replica
-- **Automatic Failover** - If primary storage server fails, requests route to replica
-- **Resynchronization** - When a failed server comes back online, it syncs from its replica
+### Fault Tolerance & Replication
+- **Automatic File Replication** - New files are stored on two different storage servers when available
+- **Intelligent Server Selection** - Round-robin algorithm ensures balanced load distribution
+- **Graceful Degradation** - System works with any number of storage servers (1 to N)
+- **Transparent Operations** - Users don't see backend replication complexity
+- **Automatic Failover** - READ/WRITE operations use backup servers if primary fails
+- **Consistency Management** - All replicated operations maintain data consistency
 
 ### Persistence
 - **File Metadata** - Registry persists across nameserver restarts
@@ -602,10 +659,47 @@ INFO myfile.txt
 
 ---
 
+## Implementation Details
+
+### Replication Algorithm
+The system implements a **dual-server replication strategy**:
+
+1. **Server Selection**: 
+   - Uses round-robin algorithm to select primary server
+   - Selects secondary server using offset calculation to ensure different server
+   - Falls back gracefully to single-server mode when only one server available
+
+2. **File Creation Process**:
+   - Name server validates request and checks available servers
+   - Creates file on primary server first
+   - Creates file on secondary server (if available)
+   - Updates metadata only after successful primary creation
+   - Secondary failure is logged but doesn't fail the operation
+
+3. **File Access Process**:
+   - READ operations try primary server first, fall back to secondary
+   - WRITE operations maintain consistency across both servers
+   - DELETE operations remove from both servers when possible
+
+### Data Consistency
+- **Write Consistency**: All write operations update both replicas
+- **Sentence Validation**: Enforces sequential sentence writing with proper termination
+- **Lock Management**: Prevents concurrent writes to same sentence across all replicas
+- **Metadata Synchronization**: Central name server maintains authoritative file registry
+
+### Error Recovery
+- **Graceful Degradation**: System continues operating with reduced servers
+- **Transparent Failover**: Users unaware of backend server failures
+- **Validation Layers**: Multiple validation points (name server + storage server)
+- **Clean Error Messages**: User-friendly error reporting without technical details
+
+---
+
 ## Error Codes
 
-- **404** - File/Folder not found
+- **400** - Bad Request (invalid sentence index, malformed parameters)
 - **403** - Access denied (insufficient permissions)
+- **404** - File/Folder not found
 - **409** - File/Folder already exists
 - **423** - File locked (sentence being edited)
 - **500** - Server error
@@ -617,9 +711,12 @@ INFO myfile.txt
 
 1. **File Paths**: Use forward slashes for paths (e.g., `folder/file.txt`)
 2. **Usernames**: Set at client connection time, used for ownership and permissions
-3. **Sentence Numbering**: Sentences are 0-indexed
+3. **Zero-Based Indexing**: **All indexes start from 0** (sentences, words, positions)
 4. **Write Permission**: Includes read permission automatically
 5. **Backups**: System maintains `.bak` files for UNDO functionality
+6. **Replication**: Files automatically replicated to two servers when available
+7. **Sequential Writing**: Sentences must be written in order with proper termination (`.`, `?`, `!`)
+8. **Storage Flexibility**: System adapts to 1-N storage servers seamlessly
 
 ---
 

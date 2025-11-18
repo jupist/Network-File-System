@@ -157,7 +157,7 @@ void write_session_to_ss(int nm_socket, const char* ss_ip, int ss_port, const ch
     printf("SS: %s", response_buffer);
 
     // If the server sent an error on START (e.g., bad sentence index), abort.
-    if (strncmp(response_buffer, "ERROR:", 6) == 0) {
+    if (strncmp(response_buffer, "ERROR", 5) == 0) {
         // We don't enter the loop. We'll just fall through to the lock release.
     } else {
         // 3. Enter interactive write loop
@@ -243,12 +243,12 @@ int connect_to_name_server() {
 /*
  * Main loop to handle user commands.
  */
-void command_loop(int nm_socket) {
+void command_loop(int nm_socket, const char* username) {
     char command_buffer[BUFFER_SIZE];
     char response_buffer[BUFFER_SIZE];
 
     while (1) {
-        printf("Docs++ > ");
+        printf("Docs++ %s > ", username);
         
         if (fgets(command_buffer, sizeof(command_buffer), stdin) == NULL) {
             printf("Error reading input or EOF reached. Exiting.\n");
@@ -310,6 +310,7 @@ void command_loop(int nm_socket) {
                     printf("Error: Could not parse SS_LOCATION response.\n");
                 }
             } else {
+                // If not SS_LOCATION, it's an error message - just print it and don't start write session
                 printf("%s", response_buffer);
             }
             continue; 
@@ -399,7 +400,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    command_loop(nm_socket);
+    command_loop(nm_socket, username);
 
     close(nm_socket);
     return 0;

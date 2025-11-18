@@ -120,6 +120,13 @@ void load_registry_from_disk() {
             temp_file.ss_index = 0; // Default to SS0
         }
         
+        // Initialize secondary SS fields if they weren't saved (backwards compatibility)
+        if (temp_file.ss2_index < 0 || temp_file.ss2_index >= MAX_SERVERS) {
+            temp_file.ss2_index = -1; // No secondary server
+            temp_file.ss2_client_port = 0;
+            memset(temp_file.ss2_ip_addr, 0, sizeof(temp_file.ss2_ip_addr));
+        }
+        
         hash_map_insert_unsafe(temp_file);
     }
 
