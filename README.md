@@ -1,6 +1,6 @@
 [![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/0ek2UV58)
 
-# Docs++ - Distributed File System
+# Docs++ : Distributed File System
 
 A distributed file system implementation with multiple storage servers, client-server architecture, and comprehensive file management features.
 
@@ -734,6 +734,6 @@ This compiles:
 
 ---
 
-## Authors
-Team: be-creative
+## Authors : Team be creative
+Aman Jayesh & Anushka Sinha 
 

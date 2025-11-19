@@ -43,12 +43,11 @@ void fetch_file_from_ss(const char* ss_ip, int ss_port, const char* filename) {
 
     char file_buffer[BUFFER_SIZE];
     ssize_t bytes_read;
-    printf("--- File Content ---\n");
     while ((bytes_read = read(ss_sock, file_buffer, sizeof(file_buffer) - 1)) > 0) {
         file_buffer[bytes_read] = '\0';
         printf("%s", file_buffer); 
     }
-    printf("\n--- End of File ---\n");
+    printf("\n");
 
     if (bytes_read < 0) {
         perror("Client (SS): read from SS failed");
@@ -90,15 +89,15 @@ void stream_file_from_ss(const char* ss_ip, int ss_port, const char* filename) {
         return;
     }
 
+
     char stream_buffer[BUFFER_SIZE];
     ssize_t bytes_read;
-    printf("--- Start of Stream ---\n");
     while ((bytes_read = read(ss_sock, stream_buffer, sizeof(stream_buffer) - 1)) > 0) {
         stream_buffer[bytes_read] = '\0';
         printf("%s", stream_buffer); 
         fflush(stdout); 
     }
-    printf("--- End of Stream ---\n");
+    printf("\n");
 
     if (bytes_read < 0) {
         perror("Client (SS-Stream): read from SS failed");
@@ -115,8 +114,6 @@ void write_session_to_ss(int nm_socket, const char* ss_ip, int ss_port, const ch
     struct sockaddr_in ss_addr;
     char command_buffer[BUFFER_SIZE];
     char response_buffer[BUFFER_SIZE];
-
-    printf("--- Connecting to Storage Server at %s:%d for writing...\n", ss_ip, ss_port);
 
     // 1. Connect to SS
     if ((ss_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -154,10 +151,10 @@ void write_session_to_ss(int nm_socket, const char* ss_ip, int ss_port, const ch
         return; // Exit the function, the 'finally' block below will run.
     }
     response_buffer[bytes_read] = '\0';
-    printf("SS: %s", response_buffer);
 
     // If the server sent an error on START (e.g., bad sentence index), abort.
     if (strncmp(response_buffer, "ERROR", 5) == 0) {
+        printf("%s", response_buffer);
         // We don't enter the loop. We'll just fall through to the lock release.
     } else {
         // 3. Enter interactive write loop
@@ -182,7 +179,10 @@ void write_session_to_ss(int nm_socket, const char* ss_ip, int ss_port, const ch
                 break; // Exit loop, connection is dead
             }
             response_buffer[bytes_read] = '\0';
-            printf("SS: %s", response_buffer); // Print ACK_UPDATE_OK or ERROR: ...
+            // Only print errors, not ACKs
+            if (strncmp(response_buffer, "ERROR", 5) == 0) {
+                printf("%s", response_buffer);
+            }
             // --- **** END OF FIX **** ---
 
             // If we just sent ETIRW, the response was the final ACK. Exit.
@@ -195,17 +195,13 @@ void write_session_to_ss(int nm_socket, const char* ss_ip, int ss_port, const ch
     close(ss_sock);
 
     // 4. Tell NM to release the lock
-    printf("Write session ended. Releasing lock...\n");
     snprintf(command_buffer, sizeof(command_buffer), "RELEASE_LOCK %s %d\n", base_filename, sentence_num);
     if (write(nm_socket, command_buffer, strlen(command_buffer)) < 0) {
         perror("Failed to send RELEASE_LOCK to NM");
     } else {
-        // Read the final ACK from NM
+        // Read the final ACK from NM (silently)
         bytes_read = read(nm_socket, response_buffer, sizeof(response_buffer) - 1);
-        if (bytes_read > 0) {
-            response_buffer[bytes_read] = '\0';
-            printf("NM: %s", response_buffer);
-        }
+        // No output needed for successful lock release
     }
 }
 

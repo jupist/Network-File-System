@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <pthread.h>
 #include <time.h>     
 #include <stdarg.h>  // For va_list
@@ -336,8 +337,8 @@ int get_file_content_from_ss(const char* ss_ip, int ss_client_port, const char* 
  * Returns 0 if valid, -1 if invalid (sentence index out of bounds).
  */
 int validate_sentence_index(const char* ss_ip, int ss_client_port, const char* filename, int target_sentence) {
-    if (target_sentence <= 1) {
-        return 0; // Sentence 1 is always valid
+    if (target_sentence == 0) {
+        return 0; // Sentence 0 is always valid (first sentence)
     }
     
     char file_content[BUFFER_SIZE];
@@ -357,7 +358,9 @@ int validate_sentence_index(const char* ss_ip, int ss_client_port, const char* f
     
     // Check if we can write to target_sentence
     // We can write to sentence N if sentence N-1 is properly terminated
-    if (target_sentence <= sentence_count + 1) {
+    // sentence_count gives us the number of terminated sentences (0, 1, 2, ...)
+    // So we can write to sentence_count (the next sentence after the last terminated one)
+    if (target_sentence <= sentence_count) {
         return 0; // Valid
     } else {
         return -1; // Out of bounds - previous sentence not terminated
@@ -1263,10 +1266,11 @@ void* handle_connection(void* arg) {
 
                 pthread_mutex_lock(&g_system_mutex);
                 
-                file = cache_get_unsafe(filename);
-                if (file == NULL) {
-                    file = hash_map_find_unsafe(filename);
-                    if (file != NULL) cache_put_unsafe(filename, file);
+                char base_filename[256];
+                char folder_path[256];
+                file = find_file_by_path(filename, base_filename, folder_path);
+                if (file != NULL) {
+                    cache_put_unsafe(base_filename, file);
                 }
                 
                 if (file != NULL) {
@@ -1322,10 +1326,11 @@ void* handle_connection(void* arg) {
 
                 pthread_mutex_lock(&g_system_mutex);
                 
-                file = cache_get_unsafe(filename);
-                if (file == NULL) {
-                    file = hash_map_find_unsafe(filename);
-                    if (file != NULL) cache_put_unsafe(filename, file);
+                char base_filename[256];
+                char folder_path[256];
+                file = find_file_by_path(filename, base_filename, folder_path);
+                if (file != NULL) {
+                    cache_put_unsafe(base_filename, file);
                 }
                 
                 if (file != NULL) {
@@ -1945,9 +1950,36 @@ void* handle_connection(void* arg) {
                 printf("Client requested CREATE for '%s'\n", filename);
                 log_to_file(client_addr_str, username, "REQ: CREATE for '%s'", filename);
 
+                // Parse the path to extract base filename and folder
+                char base_filename[256];
+                char folder_path[512];
+                char temp_path[1024];
+                strncpy(temp_path, filename, sizeof(temp_path) - 1);
+                temp_path[sizeof(temp_path) - 1] = '\0';
+                
+                char* slash = strrchr(temp_path, '/');
+                if (slash != NULL) {
+                    // Path contains a folder (e.g., "anu/1.txt")
+                    *slash = '\0';
+                    char* folder = temp_path;
+                    char* base = slash + 1;
+                    
+                    folder_path[0] = '/';
+                    strncpy(folder_path + 1, folder, 510);
+                    folder_path[511] = '\0';
+                    strncpy(base_filename, base, 255);
+                    base_filename[255] = '\0';
+                } else {
+                    // No folder, just filename
+                    strncpy(base_filename, filename, 255);
+                    base_filename[255] = '\0';
+                    strcpy(folder_path, "/");
+                }
+
                 pthread_mutex_lock(&g_system_mutex);
                 
-                FileLocation* file = hash_map_find_unsafe(filename);
+                // Check if file already exists with same base name and folder
+                FileLocation* file = find_file_by_path(filename, base_filename, folder_path);
                 if (file != NULL) {
                     pthread_mutex_unlock(&g_system_mutex);
                     log_to_file(client_addr_str, username, "RES: CREATE for '%s' failed: File already exists.", filename);
@@ -2002,7 +2034,7 @@ void* handle_connection(void* arg) {
 
                 if (overall_result == 0) {
                     FileLocation new_file;
-                    strncpy(new_file.filename, filename, 255);
+                    strncpy(new_file.filename, base_filename, 255);
                     
                     // Primary storage server info
                     new_file.ss_client_port = server_list[primary_ss].ss_client_port;
@@ -2025,7 +2057,7 @@ void* handle_connection(void* arg) {
                     new_file.num_permissions = 0; 
                     strncpy(new_file.last_accessed_by, "N/A", 255);
                     strncpy(new_file.last_accessed_ts, "N/A", 127);
-                    strncpy(new_file.folder_path, "/", 511); // Root folder by default
+                    strncpy(new_file.folder_path, folder_path, 511);
                     
                     pthread_mutex_lock(&g_system_mutex);
                     hash_map_insert_unsafe(new_file);
@@ -2214,10 +2246,11 @@ void* handle_connection(void* arg) {
 
                 pthread_mutex_lock(&g_system_mutex);
                 
-                FileLocation* file = cache_get_unsafe(target_filename);
-                if (file == NULL) {
-                    file = hash_map_find_unsafe(target_filename);
-                    if (file != NULL) cache_put_unsafe(target_filename, file);
+                char base_filename[256];
+                char folder_path[256];
+                FileLocation* file = find_file_by_path(target_filename, base_filename, folder_path);
+                if (file != NULL) {
+                    cache_put_unsafe(base_filename, file);
                 }
                 
                 if (file == NULL) {
@@ -2293,10 +2326,11 @@ void* handle_connection(void* arg) {
 
                 pthread_mutex_lock(&g_system_mutex);
                 
-                FileLocation* file = cache_get_unsafe(target_filename);
-                if (file == NULL) {
-                    file = hash_map_find_unsafe(target_filename);
-                    if (file != NULL) cache_put_unsafe(target_filename, file);
+                char base_filename[256];
+                char folder_path[256];
+                FileLocation* file = find_file_by_path(target_filename, base_filename, folder_path);
+                if (file != NULL) {
+                    cache_put_unsafe(base_filename, file);
                 }
 
                 if (file == NULL) {
@@ -2893,10 +2927,11 @@ void* handle_connection(void* arg) {
 
                 pthread_mutex_lock(&g_system_mutex);
                 
-                file = cache_get_unsafe(filename);
-                if (file == NULL) {
-                    file = hash_map_find_unsafe(filename);
-                    if (file != NULL) cache_put_unsafe(filename, file);
+                char base_filename[256];
+                char folder_path[256];
+                file = find_file_by_path(filename, base_filename, folder_path);
+                if (file != NULL) {
+                    cache_put_unsafe(base_filename, file);
                 }
                 
                 if (file != NULL) {
@@ -2953,10 +2988,11 @@ void* handle_connection(void* arg) {
 
                 pthread_mutex_lock(&g_system_mutex);
                 
-                file = cache_get_unsafe(filename);
-                if (file == NULL) {
-                    file = hash_map_find_unsafe(filename);
-                    if (file != NULL) cache_put_unsafe(filename, file);
+                char base_filename[256];
+                char folder_path[256];
+                file = find_file_by_path(filename, base_filename, folder_path);
+                if (file != NULL) {
+                    cache_put_unsafe(base_filename, file);
                 }
                 
                 if (file != NULL) {
@@ -3022,10 +3058,11 @@ void* handle_connection(void* arg) {
 
                 pthread_mutex_lock(&g_system_mutex);
                 
-                FileLocation* file = cache_get_unsafe(filename);
-                if (file == NULL) {
-                    file = hash_map_find_unsafe(filename);
-                    if (file != NULL) cache_put_unsafe(filename, file);
+                char base_filename[256];
+                char folder_path[256];
+                FileLocation* file = find_file_by_path(filename, base_filename, folder_path);
+                if (file != NULL) {
+                    cache_put_unsafe(base_filename, file);
                 }
                 
                 if (file == NULL) {
@@ -3157,10 +3194,11 @@ void* handle_connection(void* arg) {
                 }
                 
                 // Get the file
-                FileLocation* file = cache_get_unsafe(filename);
-                if (file == NULL) {
-                    file = hash_map_find_unsafe(filename);
-                    if (file != NULL) cache_put_unsafe(filename, file);
+                char base_filename[256];
+                char folder_path[256];
+                FileLocation* file = find_file_by_path(filename, base_filename, folder_path);
+                if (file != NULL) {
+                    cache_put_unsafe(base_filename, file);
                 }
                 
                 if (file == NULL) {
